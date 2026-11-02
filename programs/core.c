@@ -600,7 +600,8 @@ static int cmd_about(void)
 static int cmd_ver(void)
 {
     p_puts("PIEG Shell ");
-    p_putln(pieg->shell_version);
+    p_puts(pieg->shell_version);
+    p_putln(" \"Spooked\"");
     p_putln("PIEG OS x86-64");
     return 0;
 }
@@ -721,8 +722,7 @@ static int cmd_hex(int argc, char **argv)
 
 static int cmd_whoami(void)
 {
-    p_putln("root");
-    p_putln("PIEG user accounts are not implemented yet.");
+    p_putln(pieg->user_mode ? "default" : "kernel");
     return 0;
 }
 
@@ -799,7 +799,7 @@ int main(int argc, char **argv)
     if (IS("ver") || IS("version"))
         return cmd_ver();
     if (IS("uname")) {
-        p_putln("PIEG pieg 0.7 x86_64 Multiboot2");
+        p_putln("PIEG pieg 0.8 Spooked x86_64 Multiboot2");
         return 0;
     }
     if (IS("hostname")) {

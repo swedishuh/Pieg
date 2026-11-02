@@ -29,6 +29,12 @@ SECTIONS
         *(.data .data.*)
     }
 
+    /* Ring-3 region: its own 2 MiB page, made user-accessible by arch_init(). */
+    .userbss ALIGN(2M) (NOLOAD) :
+    {
+        *(.bss.userregion)
+    }
+
     .bss ALIGN(4K) (NOLOAD) :
     {
         *(COMMON)

@@ -61,11 +61,43 @@ NO_PATTERNS int memcmp(const void *a, const void *b, size_t n)
     return 0;
 }
 
+/* Ring 3 cannot receive callbacks from the kernel, so fs_list is rebuilt
+ * here from the record-based fs_list_raw syscall. */
+static pieg_api_t local_api;
+static char list_buf[8192];
+
+static int user_fs_list(const char *path, pieg_list_cb cb, void *ctx)
+{
+    uint32_t used = 0;
+    int r = local_api.fs_list_raw(path, list_buf, sizeof(list_buf), &used);
+
+    if (r)
+        return r;
+
+    for (uint32_t o = 0; o + 7 <= used;) {
+        uint32_t size;
+        uint8_t nl = (uint8_t)list_buf[o + 5];
+
+        memcpy(&size, list_buf + o, 4);
+        cb(list_buf + o + 6, (uint8_t)list_buf[o + 4], size, ctx);
+        o += 6u + nl + 1u;
+    }
+
+    return 0;
+}
+
 /* Entry point: the shell calls this with the kernel API table. */
 __attribute__((visibility("default"), used))
 int pieg_start(const pieg_api_t *api, int argc, char **argv)
 {
     pieg = api;
+
+    if (api->user_mode) {
+        local_api = *api;
+        local_api.fs_list = user_fs_list;
+        pieg = &local_api;
+    }
+
     return main(argc, argv);
 }
 

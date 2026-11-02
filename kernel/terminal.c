@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #include "fsinit.h"
+#include "login.h"
 #include "program.h"
 #include "shellfs.h"
 
@@ -35,6 +36,7 @@ static char history[TERMINAL_HISTORY_SIZE][TERMINAL_INPUT_SIZE];
 static unsigned int history_count;
 static unsigned int history_next;
 static int history_position = -1;
+static bool logout_requested;
 
 /* ================================================================
  * OUTPUT
@@ -162,7 +164,8 @@ static char *skip_spaces(char *s)
 
 static void prompt(void)
 {
-    print("pieg:");
+    print(login_user());
+    print("@pieg:");
     print(shellfs_cwd());
     print(" $ ");
 }
@@ -472,7 +475,7 @@ static void help_program(const char *name, uint8_t attributes,
 static void show_help(void)
 {
     println(TERMINAL_NAME " " TERMINAL_VERSION);
-    println("Built-in: cd, help, history, history-clear, exit");
+    println("Built-in: cd, help, history, history-clear, exit/logout");
     println("Programs in /PROGRAMS (run by name):");
 
     help_context_t h = {0, 0};
@@ -521,9 +524,8 @@ static void execute_command(const char *line)
         history_show();
     } else if (str_ieq(name, "history-clear")) {
         history_clear();
-    } else if (str_ieq(name, "exit")) {
-        println("The PIEG shell runs inside the kernel.");
-        println("There is no parent process to return to.");
+    } else if (str_ieq(name, "exit") || str_ieq(name, "logout")) {
+        logout_requested = true;
     } else {
         int status;
 
@@ -546,7 +548,8 @@ void terminal_run(void)
     println(TERMINAL_NAME);
     println("Pieg Isn't Even GNU");
     print("Version ");
-    println(TERMINAL_VERSION);
+    print(TERMINAL_VERSION);
+    println(" \"" PIEG_RELEASE_NAME "\"");
     println("Type 'help' for commands.");
     shellfs_start();
     vga_putchar('\n');
@@ -555,5 +558,11 @@ void terminal_run(void)
         prompt();
         read_line(input, sizeof(input));
         execute_command(input);
+
+        if (logout_requested) {
+            logout_requested = false;
+            println("logout");
+            return;
+        }
     }
 }

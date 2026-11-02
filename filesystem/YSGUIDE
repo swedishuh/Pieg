@@ -1,0 +1,180 @@
+
+YSguide
+========
+IYS - INTERPRET YOUR SCRIPT
+PIEG OS SCRIPTING GUIDE
+======================
+
+ABOUT IYS
+---------
+
+IYS is a lightweight scripting language interpreter for PIEG OS.
+
+Script files use the .ys extension and are executed through the
+PIEG terminal using the iys command.
+
+RUNNING SCRIPTS
+---------------
+
+To execute a script:
+
+    iys hello.ys
+
+You can also provide an absolute path:
+
+    iys /PROGRAMS/HELLO.YS
+
+To start the interactive interpreter:
+
+    iys
+
+COMMENTS
+--------
+
+Use # to write comments. Everything after the # on that
+line is ignored.
+
+    # This is a comment
+    let answer = 42
+
+VARIABLES
+---------
+
+Create variables using the let keyword.
+
+    let name = "PIEG"
+    let version = 1
+    let answer = 42
+
+Variables can store strings or integer values.
+
+PRINTING
+--------
+
+Use print() to display text or values.
+
+    print("Hello from PIEG")
+    print(42)
+
+Strings can be combined using the + operator.
+
+    let os = "PIEG"
+    print("Hello from " + os)
+
+ARITHMETIC
+----------
+
+IYS supports basic arithmetic operations.
+
+    +    Addition
+    -    Subtraction
+    *    Multiplication
+    /    Division
+    %    Remainder
+
+Example:
+
+    let a = 20
+    let b = 5
+
+    print(a + b)
+    print(a - b)
+    print(a * b)
+    print(a / b)
+    print(a % b)
+
+COMPARISONS
+-----------
+
+IYS supports the following comparison operators.
+
+    ==   Equal
+    !=   Not equal
+    <    Less than
+    >    Greater than
+    <=   Less than or equal
+    >=   Greater than or equal
+
+CONDITIONALS
+------------
+
+Use if to execute code when a condition is true.
+
+Use else to execute alternative code.
+
+    let answer = 42
+
+    if answer == 42 {
+        print("Correct!")
+    } else {
+        print("Incorrect!")
+    }
+
+Code blocks are surrounded by { and }.
+
+COMPLETE EXAMPLE
+----------------
+
+Save the following script as HELLO.YS.
+
+    # A simple IYS example
+
+    let os = "PIEG"
+    let a = 20
+    let b = 22
+
+    print("Hello from " + os)
+    print("Calculating...")
+
+    let result = a + b
+
+    print(result)
+
+    if result == 42 {
+        print("The answer is 42!")
+    } else {
+        print("Something went wrong.")
+    }
+
+Execute it using:
+
+    iys hello.ys
+
+EXPECTED OUTPUT
+---------------
+
+    Hello from PIEG
+    Calculating...
+    42
+    The answer is 42!
+
+LANGUAGE REFERENCE
+------------------
+
+    let x = 10          Declare a variable
+    "Hello"             String
+    # comment           Comment
+    print(x)            Print a value
+    if x == 10 { }      Conditional
+    else { }            Alternative condition
+    a + b               Addition
+    a - b               Subtraction
+    a * b               Multiplication
+    a / b               Division
+    a % b               Remainder
+
+NOTES
+-----
+
+- IYS scripts use the .ys extension.
+- IYS is designed for PIEG OS.
+- Strings use double quotes.
+- Variables are declared using let.
+- Statements are separated by newlines.
+- Code blocks use braces.
+- IYS is intentionally lightweight.
+
+==================================================
+IYS - INTERPRET YOUR SCRIPT
+A scripting language for PIEG OS.
+==================================================

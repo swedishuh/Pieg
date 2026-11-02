@@ -26,8 +26,8 @@ extern char keyboard_getchar(void);
 
 #define PROGRAM_MEM_SIZE (1024u * 1024u)
 
-static uint8_t program_memory[PROGRAM_MEM_SIZE]
-    __attribute__((aligned(4096)));
+#include "usermode.h"
+#define program_memory user_region   /* the one ring-3-accessible page */
 
 /* ================================================================
  * API implementation
@@ -342,6 +342,9 @@ static const pieg_api_t api = {
     .disk_count = api_disk_count,
     .disk_info = api_disk_info,
     .disk_install = api_disk_install,
+
+    .user_mode = 0,
+    .fs_list_raw = usermode_fs_list_raw,
 };
 
 /* ================================================================
@@ -643,7 +646,7 @@ bool program_run(int argc, char **argv, int *status)
         return true;
     }
 
-    int code = ((program_entry_t)(uintptr_t)entry)(&api, argc, argv);
+    int code = usermode_call(entry, &api, argc, argv);
 
     if (status)
         *status = code;

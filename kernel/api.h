@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PIEG_API_VERSION    3
+#define PIEG_API_VERSION    4
 #define PIEG_ATTR_DIRECTORY 0x10
 
 typedef void (*pieg_list_cb)(const char *name, uint8_t attributes,
@@ -122,6 +122,15 @@ typedef struct pieg_api {
     unsigned int (*disk_count)(void);
     int (*disk_info)(unsigned int index, pieg_diskinfo_t *info);
     const char *(*disk_install)(unsigned int index, uint32_t size_mib);
+
+    /*
+     * Added in API version 4. user_mode is 1 when the program runs in ring 3
+     * behind int 0x80 (then fs_list is built by libpieg from fs_list_raw,
+     * because callbacks cannot cross rings). Records: u32 size, u8 attr,
+     * u8 name length, name, NUL.
+     */
+    int user_mode;
+    int (*fs_list_raw)(const char *path, void *buf, uint32_t cap, uint32_t *used);
 } pieg_api_t;
 
 #endif

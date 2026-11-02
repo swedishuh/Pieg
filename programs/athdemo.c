@@ -1264,7 +1264,10 @@ int main(int argc, char **argv)
     uint8_t target[4];
     const char *mode = argc > 1 ? argv[1] : "";
 
-    tsc_calibrate();
+#ifndef ATHDEMO_HOST
+    if (!pieg->user_mode)       /* port I/O is ring 0 only */
+#endif
+        tsc_calibrate();
 
     if (p_streq(mode, "selftest"))
         return selftest();

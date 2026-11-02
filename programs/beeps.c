@@ -64,7 +64,7 @@ static uint32_t sequence_length = 0;
 
 int main(int argc, char **argv) {
     p_putln("=========================================");
-    p_putln("        PIEG AUDIO COMPOSER V1.0        ");
+    p_putln("        PIEG 8Bit Audio composer       ");
     p_putln("=========================================");
     p_putln(" Controls:");
     p_putln("   [1 - 8]  : Step-input note entry (C4-C5)");
