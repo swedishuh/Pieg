@@ -180,6 +180,16 @@ char p_getc(void)
     }
 }
 
+int p_sound_tone(uint32_t frequency)
+{
+    return pieg->sound_tone(frequency);
+}
+
+void p_sound_stop(void)
+{
+    pieg->sound_stop();
+}
+
 size_t p_strlen(const char *s)
 {
     size_t n = 0;

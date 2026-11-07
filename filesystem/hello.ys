@@ -1,20 +1,18 @@
-# If you are reading this in cat or a text editor and confused
-# run it with iys hello.ys, IYS means interpret your script.
-# Or perhaps read YSGUIDE in the home directory.
+# hello.ys
+# YOUR first IYS program
 
-let os = "PIEG"
-let a = 20
-let b = 22
+os = "PIEG"
+a = 20
+b = 22
 
 print("Hello from " + os)
 print("Calculating...")
 
-let result = a + b
+result = a + b
 
 print(result)
 
-if result == 42 {
+if result == 42:
     print("The answer is 42!")
-} else {
+else:
     print("Something went wrong.")
-}

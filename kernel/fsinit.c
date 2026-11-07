@@ -10,6 +10,7 @@
 #include "mem.h"
 #include "partition.h"
 #include "ramdisk.h"
+#include "usb.h"
 
 extern void vga_write(const char *text);
 
@@ -20,6 +21,7 @@ static unsigned int partition_count;
 #define FS_DISK_MAX 8
 
 static blockdev_t *disk_list[FS_DISK_MAX];
+static bool disk_boot[FS_DISK_MAX];
 static unsigned int disk_total;
 
 static fat_fs_t root_fs;
@@ -158,6 +160,26 @@ static void ensure_layout(void)
     ensure_dir(PIEG_DIR_PROGRAMS);
     ensure_dir(PIEG_DIR_USERS);
     ensure_dir(PIEG_DIR_HOME);
+    ensure_dir(PIEG_DIR_INPUTDEV);
+    ensure_dir(PIEG_DIR_KEYBOARD);
+    ensure_dir(PIEG_DIR_MOUSE);
+    ensure_dir(PIEG_DIR_CUSTOM);
+}
+
+/*
+ * A USB disk holding an ISO9660 volume descriptor at byte 32768 is the
+ * hybrid live image we were booted from (heuristic: Multiboot2 does not
+ * report the boot device under UEFI).
+ */
+static bool is_boot_medium(blockdev_t *dev)
+{
+    static uint8_t sec[BLOCKDEV_SECTOR_SIZE];
+
+    if (dev->name[0] != 'u' || !blockdev_read(dev, 64, 1, sec))
+        return false;
+
+    return sec[0] == 1 && sec[1] == 'C' && sec[2] == 'D' && sec[3] == '0' &&
+           sec[4] == '0' && sec[5] == '1';
 }
 
 /* Registers a whole disk, then every partition found on it. */
@@ -166,8 +188,16 @@ static void add_disk(blockdev_t *dev)
     if (!blockdev_register(dev))
         return;
 
-    if (disk_total < FS_DISK_MAX)
+    if (disk_total < FS_DISK_MAX) {
+        disk_boot[disk_total] = is_boot_medium(dev);
         disk_list[disk_total++] = dev;
+
+        if (disk_boot[disk_total - 1]) {
+            vga_write("[FS] ");
+            vga_write(dev->name);
+            vga_write(": boot medium\n");
+        }
+    }
 
     unsigned int first = partition_count;
 
@@ -209,6 +239,9 @@ void fsinit(uint32_t magic, uint32_t mbi)
 
     for (unsigned int i = 0; i < ahci_disk_count(); i++)
         add_disk(ahci_disk_get(i));
+
+    for (unsigned int i = 0; i < usb_disk_count(); i++)
+        add_disk(usb_disk_get(i));
 
     /*
      * Registration order is ramdisk, disk, partitions. Scanning backwards
@@ -277,6 +310,68 @@ unsigned int fs_disk_count(void)
 blockdev_t *fs_disk_get(unsigned int index)
 {
     return index < disk_total ? disk_list[index] : 0;
+}
+
+/* 0 = ATA, 1 = SATA, 2 = USB (by device name prefix). */
+int fs_disk_bus(unsigned int index)
+{
+    blockdev_t *d = fs_disk_get(index);
+
+    if (!d)
+        return 0;
+
+    return d->name[0] == 'u' ? 2 : d->name[0] == 's' ? 1 : 0;
+}
+
+bool fs_disk_boot(unsigned int index)
+{
+    return index < disk_total && disk_boot[index];
+}
+
+/* Describes the n-th partition of disk `disk`; false when there is none. */
+bool fs_part_info(unsigned int disk, unsigned int n, char name[16],
+                  uint64_t *start, uint64_t *sectors, char fstype[8],
+                  char label[16])
+{
+    static fat_fs_t scratch;
+    blockdev_t *parent = fs_disk_get(disk);
+
+    if (!parent)
+        return false;
+
+    for (unsigned int i = 0; i < partition_count; i++) {
+        if (partitions[i].parent != parent || n--)
+            continue;
+
+        bool pieg;
+        const char *t = "-";
+
+        for (unsigned int k = 0; k < 15; k++)
+            name[k] = partitions[i].name[k];
+        name[15] = '\0';
+
+        *start = partitions[i].start;
+        *sectors = partitions[i].dev.sector_count;
+        label[0] = '\0';
+
+        if (probe(&partitions[i].dev, &scratch, &pieg)) {
+            t = type_name(scratch.type);
+            for (unsigned int k = 0; k < 15 && scratch.label[k]; k++) {
+                label[k] = scratch.label[k];
+                label[k + 1] = '\0';
+            }
+        }
+
+        for (unsigned int k = 0; k < 7; k++) {
+            fstype[k] = t[k];
+            if (!t[k]) break;
+            fstype[k + 1] = '\0';
+        }
+        fstype[7] = '\0';
+        return true;
+    }
+
+    return false;
 }
 
 fat_fs_t *fs_root(void)

@@ -509,6 +509,16 @@ bool framebuffer_is_available(void)
     return fb_ready;
 }
 
+bool framebuffer_shadow_region(uint64_t *start, uint64_t *length)
+{
+    if (!fb_ready || !buffered)
+        return false;
+
+    *start = (uint64_t)(uintptr_t)draw;
+    *length = align_up(fb_bytes, 4096u);
+    return true;
+}
+
 uint32_t framebuffer_width(void)
 {
     return fb_ready ? fb_width : 0;

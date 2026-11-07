@@ -1,0 +1,28 @@
+# German (QWERTZ, ISO).
+# Not available (no glyph yet): the umlauts, sharp s, the degree and
+# paragraph signs. Dead keys are not supported: ^ and ` type themselves,
+# the acute key types nothing.
+name German (QWERTZ)
+# SC  plain shift altgr
+29    ^     none
+03    2     "
+04    3     none
+07    6     &
+08    7     /      {
+09    8     (      [
+0A    9     )      ]
+0B    0     =      }
+0C    none  ?      \
+0D    none  `
+10    q     Q      @
+15    z     Z
+1A    none  none
+1B    +     *      ~
+27    none  none
+28    none  none
+2B    #     '
+56    <     >      |
+2C    y     Y
+33    ,     ;
+34    .     :
+35    -     _

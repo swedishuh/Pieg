@@ -1,0 +1,11 @@
+# UK English (ISO QWERTY).
+# Not available (no glyph yet): the pound sign on Shift+3 and the not sign
+# on Shift+`.
+name UK English (QWERTY)
+# SC  plain shift altgr
+03    2     "
+04    3     none
+28    '     @
+29    `     none
+2B    #     ~
+56    \     |

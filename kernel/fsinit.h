@@ -13,6 +13,7 @@
  *   /#          kernel and system files
  *   /PROGRAMS   programs
  *   /U/HOME     user home directory
+ *   /INPUTDEV   input devices: KEYBOARD (layouts), MOUSE, CUSTOM
  *
  * Names are case-insensitive: /programs and /u/home work.
  */
@@ -20,12 +21,21 @@
 #define PIEG_DIR_PROGRAMS "/PROGRAMS"
 #define PIEG_DIR_USERS    "/U"
 #define PIEG_DIR_HOME     "/U/HOME"
+#define PIEG_DIR_INPUTDEV "/INPUTDEV"
+#define PIEG_DIR_KEYBOARD "/INPUTDEV/KEYBOARD"
+#define PIEG_DIR_MOUSE    "/INPUTDEV/MOUSE"
+#define PIEG_DIR_CUSTOM   "/INPUTDEV/CUSTOM"
 #define PIEG_VOLUME_LABEL "PIEG"
 
 void fsinit(uint32_t multiboot_magic, uint32_t multiboot_info);
 
 /* Whole physical disks (ATA/SATA) seen at boot, and the mounted volume. */
 unsigned int fs_disk_count(void);
+int fs_disk_bus(unsigned int index);
+bool fs_disk_boot(unsigned int index);
+bool fs_part_info(unsigned int disk, unsigned int n, char name[16],
+                  uint64_t *start, uint64_t *sectors, char fstype[8],
+                  char label[16]);
 blockdev_t *fs_disk_get(unsigned int index);
 fat_fs_t *fs_root(void);
 

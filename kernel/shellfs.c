@@ -65,7 +65,7 @@ void shellfs_start(void)
     put(fs_is_writable() ? " (read/write)" : " (read-only)");
 
     if (fs_is_pieg_volume())
-        put("  [PIEG volume: /#  /PROGRAMS  /U/HOME]");
+        put("  [PIEG volume: /#  /PROGRAMS  /U/HOME  /INPUTDEV]");
 
     vga_putchar('\n');
 

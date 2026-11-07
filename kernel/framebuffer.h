@@ -13,6 +13,9 @@
 bool framebuffer_init(uint32_t multiboot_magic, uint32_t multiboot_info);
 bool framebuffer_is_available(void);
 
+/* RAM taken by the back buffer (page-aligned). False when drawing direct. */
+bool framebuffer_shadow_region(uint64_t *start, uint64_t *length);
+
 uint32_t framebuffer_width(void);
 uint32_t framebuffer_height(void);
 uint32_t framebuffer_pitch(void);

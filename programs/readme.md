@@ -92,6 +92,8 @@ System:
 
 - `fs_info(&info)`, `blockdev_count()`, `blockdev_info(i, &info)`,
   `ram_info(&info)`: return 0 when unavailable.
+- `kbd_load(path)`, `kbd_info(code, name)`: load a keyboard layout file and
+  read the active layout's names (see `Keyboard/README.md`).
 - `shell_version`: the shell version string.
 - `panic(reason, details)`, `reboot()`, `halt()`: never return.
 

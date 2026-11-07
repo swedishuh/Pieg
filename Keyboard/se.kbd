@@ -1,0 +1,25 @@
+# Swedish (QWERTY, ISO).
+# Not available (no glyph yet): a-ring, a-umlaut, o-umlaut, the section,
+# currency and euro signs. Dead keys are not supported: ^ and ` type
+# themselves, the acute and diaeresis keys type nothing.
+name Swedish (QWERTY)
+# SC  plain shift altgr
+29    none  none
+03    2     "      @
+05    4     none   $
+07    6     &
+08    7     /      {
+09    8     (      [
+0A    9     )      ]
+0B    0     =      }
+0C    +     ?      \
+0D    none  `
+1A    none  none
+1B    none  ^      ~
+27    none  none
+28    none  none
+2B    '     *
+56    <     >      |
+33    ,     ;
+34    .     :
+35    -     _

@@ -49,6 +49,32 @@ static void print_gib(uint64_t bytes)
     p_puts(" GiB");
 }
 
+static const char *bus_name(int bus)
+{
+    return bus == 2 ? "USB" : bus == 1 ? "SATA" : "ATA";
+}
+
+static void print_parts(unsigned int disk_index)
+{
+    pieg_partinfo_t p;
+
+    for (unsigned int n = 0; pieg->disk_part_info(disk_index, n, &p); n++) {
+        p_puts("   ");
+        p_puts(p.name);
+        p_puts("   ");
+        print_mib(p.bytes);
+        p_puts("   ");
+        p_puts(p.fstype);
+
+        if (p.label[0]) {
+            p_puts("  ");
+            p_puts(p.label);
+        }
+
+        p_putln("");
+    }
+}
+
 static const char *disk_state(unsigned int state)
 {
     switch (state) {
@@ -161,7 +187,7 @@ static void disk_list(void)
         return;
     }
 
-    p_putln("DEVICE       CAPACITY       PARTITION TABLE");
+    p_putln("DEVICE   BUS    CAPACITY       PARTITION TABLE");
     p_putln("------------------------------------------------");
 
     for (unsigned int i = 0; i < count; i++) {
@@ -171,12 +197,16 @@ static void disk_list(void)
             continue;
 
         p_puts(d.name);
-        p_puts("       ");
+        p_puts("     ");
+        p_puts(bus_name(d.bus));
+        p_puts("    ");
 
         print_mib(d.bytes);
 
         p_puts("       ");
-        p_putln(disk_state(d.state));
+        p_puts(disk_state(d.state));
+        p_putln(d.boot ? "  [BOOT DEVICE]" : "");
+        print_parts(i);
 
         if (d.state) {
             p_puts("             Available: ");
@@ -220,8 +250,17 @@ static int disk_info(const char *name)
     print_gib(d.bytes);
     p_putln("");
 
+    p_puts("Bus:             ");
+    p_putln(bus_name(d.bus));
+
+    if (d.boot)
+        p_putln("Boot device:     yes (booted from this disk)");
+
     p_puts("Partition table: ");
     p_putln(disk_state(d.state));
+
+    p_putln("Partitions:");
+    print_parts(index);
 
     if (d.state) {
         p_puts("Free space:      ");
@@ -251,6 +290,11 @@ static int disk_install(const char *name, uint32_t requested_mib)
     if (!find_disk(name, &index, &d)) {
         p_puts("Hippocampus: disk not found: ");
         p_putln(name);
+        return 1;
+    }
+
+    if (d.boot) {
+        p_putln("Refusing: this is the disk PIEG was booted from.");
         return 1;
     }
 

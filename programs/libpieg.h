@@ -26,6 +26,10 @@ void p_size(uint64_t bytes);
 /* Input: blocks until a key is pressed. */
 char p_getc(void);
 
+/* Sound: frequency in Hz, or stop the current tone. */
+int p_sound_tone(uint32_t frequency);
+void p_sound_stop(void);
+
 /* Strings. */
 size_t p_strlen(const char *s);
 int p_streq(const char *a, const char *b);

@@ -4,27 +4,16 @@
 #define DEFAULT_NOTE_DURATION 200
 #define POST_NOTE_DELAY 50
 
-/*
- * Hardware-level audio control via the x86 PC Speaker
- * Uses PIT (Programmable Interval Timer) Ports 0x61, 0x43, and 0x42
- */
-static void set_speaker_frequency(uint32_t frequency) {
+/* Sound hardware is controlled by the kernel API, not from ring 3. */
+static void set_speaker_frequency(uint32_t frequency)
+{
     if (frequency == 0) {
-        // Disable speaker output
-        asm volatile ("inb $0x61, %%al; andb $0xfc, %%al; outb %%al, $0x61" ::: "eax");
+        p_sound_stop();
         return;
     }
 
-    // Calculate PIT divisor (Internal oscillator clock: 1193180 Hz)
-    uint32_t divisor = 1193180 / frequency;
-
-    // Configure PIT Channel 2 (Square wave generator mode)
-    asm volatile ("movb $0xb6, %%al; outb %%al, $0x43" ::: "eax");
-    asm volatile ("movb %%cl, %%al; outb %%al, $0x42" :: "c"(divisor & 0xff) : "eax");
-    asm volatile ("movb %%ch, %%al; outb %%al, $0x42" :: "c"((divisor >> 8) & 0xff) : "eax");
-
-    // Enable speaker gating
-    asm volatile ("inb $0x61, %%al; orb $0x03, %%al; outb %%al, $0x61" ::: "eax");
+    if (p_sound_tone(frequency) != 0)
+        p_putln("Sound error: invalid frequency.");
 }
 
 /*

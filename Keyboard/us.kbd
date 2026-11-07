@@ -1,0 +1,4 @@
+# US English (QWERTY), the built-in default.
+# A layout file lists only the keys that differ from this layout, so this
+# file has no key lines. Loading it switches back to the default.
+name US English (QWERTY)

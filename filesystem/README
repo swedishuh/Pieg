@@ -1,3 +1,11 @@
 Welcome to PIEG (Pieg isn't even GNU) User manual.
 -------------------------------------
-Nothing here yet...
+Beeps program
+If you want to use beeps program remember it's not very usable yet, though some songs work.
+Here is an example: 2    4    2    4    1    3    1    5, try running it in beeps.
+
+Keyboard layouts
+If your keys type the wrong characters, run keymap to see the layouts in
+/INPUTDEV/KEYBOARD and keymap de (or fr, se, uk, dvorak, colemak, us) to
+switch. The choice is kept for the next boot. keymap --test lets you type to
+check it. AltGr is the right Alt key.

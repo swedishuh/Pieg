@@ -246,7 +246,11 @@ const char *persist_install(unsigned int index, uint32_t size_mib)
     if (fat_mkdir(&new_fs, PIEG_DIR_SYSTEM) != FAT_OK ||
         fat_mkdir(&new_fs, PIEG_DIR_PROGRAMS) != FAT_OK ||
         fat_mkdir(&new_fs, PIEG_DIR_USERS) != FAT_OK ||
-        fat_mkdir(&new_fs, PIEG_DIR_HOME) != FAT_OK)
+        fat_mkdir(&new_fs, PIEG_DIR_HOME) != FAT_OK ||
+        fat_mkdir(&new_fs, PIEG_DIR_INPUTDEV) != FAT_OK ||
+        fat_mkdir(&new_fs, PIEG_DIR_KEYBOARD) != FAT_OK ||
+        fat_mkdir(&new_fs, PIEG_DIR_MOUSE) != FAT_OK ||
+        fat_mkdir(&new_fs, PIEG_DIR_CUSTOM) != FAT_OK)
         return "could not create the PIEG directories";
 
     /* Bring the running system along so the new volume boots on its own. */

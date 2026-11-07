@@ -153,7 +153,10 @@ void arch_init(void)
     X(fs_df, 3) X(fs_error, 0) X(fs_info, 1) X(blockdev_count, 0) \
     X(blockdev_info, 2) X(ram_info, 1) X(panic, 3) X(reboot, 0) \
     X(halt, 0) X(pci_count, 0) X(pci_info, 2) X(disk_count, 0) \
-    X(disk_info, 2) X(disk_install, 0)
+    X(disk_info, 2) X(disk_install, 0) \
+    X(sound_tone, 0) X(sound_stop, 0) \
+    X(disk_part_info, 4) \
+    X(kbd_load, 1) X(kbd_info, 3)
 
 enum {
     SYS_exit = 0,

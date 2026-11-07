@@ -1,0 +1,34 @@
+# French (AZERTY, ISO).
+# Digits are on Shift, as on a real French keyboard.
+# Not available (no glyph yet): e/a/u accents, c cedilla, superscript two,
+# degree, pound, micro and paragraph signs. Dead keys are not supported:
+# ^ types itself, the diaeresis key types nothing.
+name French (AZERTY)
+# SC  plain shift altgr
+29    none  none
+02    &     1
+03    none  2      ~
+04    "     3      #
+05    '     4      {
+06    (     5      [
+07    -     6      |
+08    none  7      `
+09    _     8      \
+0A    none  9      ^
+0B    none  0      @
+0C    )     none   ]
+0D    =     +      }
+10    a     A
+11    z     Z
+1A    ^     none
+1B    $     none
+1E    q     Q
+27    m     M
+28    none  %
+2B    *     none
+56    <     >
+2C    w     W
+32    ,     ?
+33    ;     .
+34    :     /
+35    !     none

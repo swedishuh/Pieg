@@ -1,0 +1,20 @@
+# Colemak (US). Caps Lock is not remapped.
+name Colemak (US)
+# SC  plain shift
+12    f     F
+13    p     P
+14    g     G
+15    j     J
+16    l     L
+17    u     U
+18    y     Y
+19    ;     :
+1F    r     R
+20    s     S
+21    t     T
+22    d     D
+24    n     N
+25    e     E
+26    i     I
+27    o     O
+31    k     K

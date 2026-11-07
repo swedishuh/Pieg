@@ -580,8 +580,8 @@ static int cmd_ram(void)
         p_size(ram.free);
         p_putc('\n');
     } else {
-        p_putln("Used RAM:   unavailable, no allocator accounting");
-        p_putln("Free RAM:   unavailable, no allocator accounting");
+        p_putln("Used RAM:   unavailable");
+        p_putln("Free RAM:   unavailable");
     }
 
     return 0;
@@ -601,7 +601,7 @@ static int cmd_ver(void)
 {
     p_puts("PIEG Shell ");
     p_puts(pieg->shell_version);
-    p_putln(" \"Spooked\"");
+    p_putln(" \"Tea Lake\"");
     p_putln("PIEG OS x86-64");
     return 0;
 }
@@ -641,17 +641,36 @@ static int cmd_sysinfo(void)
     return cmd_ram();
 }
 
+static const char *const fetch_art[] = {
+    "      VJJO                       JJV",
+    "      JJJJ                      JJJJJ",
+    "     JGAACJ     JJJJJJJJJ       JAAGJ",
+    "     JGAACJ     JJJJJJJJJ       JAAGJ",
+    "      GAACJJJJJJJJJJJJJJJJJJJJJJJAAGJ",
+    "    JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "    JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    " JJJJJJJJO  AAJ JJJJJJJJS AAA PJJJJJJJJJW",
+    " JJJJJJJJO  AAJ JJJJJJJJS AAA PJJJJJJJJJW",
+    "JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "JJJJJJJJJJJJJJJJJJJJJEAAAJJJJJJJJJJJJJJJJJ",
+    "JJJJJJJJJJJJJJJJAAAAJEAAAJJJJJJJJJJJJJJJJJ",
+    " XJJJJJJJJJJJJJJAAAAJEAAAJJJJJJJJJJJJJJJ",
+    " XJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "     JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "     JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+    "             JJJJJJJJJJJJJJJ",
+    "             JJJJJJJJJJJJJJJ",
+};
+
 static int cmd_fetch(void)
 {
     pieg_fsinfo_t fs;
     pieg_raminfo_t ram;
 
-    p_putln("      ______ _____ _____");
-    p_putln("     |  __  |  ___|  __ \\");
-    p_putln("     | |__) | |__ | |__) |");
-    p_putln("     |  ___/|  __||  ___/");
-    p_putln("     | |    | |___| |");
-    p_putln("     |_|    |_____|_|");
+    for (size_t i = 0; i < sizeof(fetch_art) / sizeof(fetch_art[0]); i++)
+        p_putln(fetch_art[i]);
+
     p_putc('\n');
 
     p_putln("PIEG OS");
@@ -799,7 +818,7 @@ int main(int argc, char **argv)
     if (IS("ver") || IS("version"))
         return cmd_ver();
     if (IS("uname")) {
-        p_putln("PIEG pieg 0.8 Spooked x86_64 Multiboot2");
+        p_putln("PIEG pieg 0.8.1 Tea Lake x86_64 Multiboot2");
         return 0;
     }
     if (IS("hostname")) {

@@ -18,8 +18,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PIEG_API_VERSION    4
+#define PIEG_API_VERSION    7
 #define PIEG_ATTR_DIRECTORY 0x10
+
+/* Buffer sizes for kbd_info(). */
+#define PIEG_KBD_CODE_MAX   12
+#define PIEG_KBD_NAME_MAX   32
 
 typedef void (*pieg_list_cb)(const char *name, uint8_t attributes,
                              uint32_t size, void *context);
@@ -68,7 +72,17 @@ typedef struct {
     uint64_t bytes;
     int state;                  /* 0 = unsupported, 1 = blank, 2 = valid GPT */
     uint64_t free_bytes;        /* space a new PIEG volume could use */
+    int bus;                    /* 0 = ATA, 1 = SATA, 2 = USB */
+    int boot;                   /* 1 = this disk holds the live boot image */
 } pieg_diskinfo_t;
+
+typedef struct {
+    char name[16];              /* e.g. "usb0p1" */
+    uint64_t start;             /* first sector */
+    uint64_t bytes;
+    char fstype[8];             /* "FAT32", "-" when not FAT */
+    char label[16];
+} pieg_partinfo_t;
 
 typedef struct pieg_api {
     uint32_t version;
@@ -131,6 +145,29 @@ typedef struct pieg_api {
      */
     int user_mode;
     int (*fs_list_raw)(const char *path, void *buf, uint32_t cap, uint32_t *used);
+
+    /* Added in API version 5: PC speaker tone control. */
+    int (*sound_tone)(uint32_t frequency);
+    void (*sound_stop)(void);
+
+    /* Added in API version 6: partitions of disk `disk` (0 when n is past the end). */
+    int (*disk_part_info)(unsigned int disk, unsigned int n,
+                          pieg_partinfo_t *info);
+
+    /*
+     * Added in API version 7: keyboard layouts.
+     *
+     * kbd_load() reads a layout file (absolute path) and makes it the active
+     * layout. It returns 0, or (line << 8) | kind: kind 1 file unreadable,
+     * 2 too large, 3 syntax error, 4 bad scancode, 5 bad character. A failed
+     * load leaves the current layout untouched.
+     *
+     * kbd_info() copies the active layout's short name ("us", "de", ...)
+     * into code (PIEG_KBD_CODE_MAX bytes) and its display name into name
+     * (PIEG_KBD_NAME_MAX bytes). Either may be NULL.
+     */
+    int (*kbd_load)(const char *path);
+    int (*kbd_info)(char *code, char *name);
 } pieg_api_t;
 
 #endif

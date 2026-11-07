@@ -1,1108 +1,627 @@
-
 #include "libpieg.h"
 
 /*
  * IYS - Interpret Your Script
- * Native PIEG scripting interpreter
+ * Small Python-compatible interpreter for PIEG.
  *
- * Usage:
- *   iys
- *   iys FILE.YS
- *   iys --version
- *   iys --help
+ * Supported subset:
+ *   - integers, strings, True, False
+ *   - variables and assignment
+ *   - print(value, value, ...)
+ *   - + - * / % and parentheses
+ *   - == != < <= > >=
+ *   - if / else blocks using Python indentation and colons
+ *   - # comments
+ *
+ * This is deliberately a small Python-like subset, not CPython.
  */
 
-#define IYS_VERSION       "1.1"
-#define SOURCE_MAX        32768
-#define TOKEN_MAX         256
-#define VARIABLE_MAX      64
-#define VARIABLE_NAME_MAX 32
-#define STRING_MAX        256
+#define SOURCE_MAX 32768
+#define LINE_MAX   512
+#define VAR_MAX    64
+#define NAME_MAX   32
+#define STR_MAX    256
+#define TOK_MAX    128
+
+enum { V_INT, V_STR, V_BOOL };
+typedef struct {
+    int type;
+    int64_t n;
+    char s[STR_MAX];
+} value_t;
+
+typedef struct {
+    char name[NAME_MAX];
+    value_t value;
+} variable_t;
 
 enum {
-    TOK_EOF = 256,
-    TOK_ID,
-    TOK_NUMBER,
-    TOK_STRING,
-    TOK_NEWLINE,
-    TOK_EQEQ,
-    TOK_NEQ,
-    TOK_LTE,
-    TOK_GTE
+    T_END = 0, T_NUM = 256, T_STR, T_ID, T_EQ, T_NE, T_LE, T_GE,
+    T_AND, T_OR, T_NOT
 };
 
 typedef struct {
     int kind;
-    char text[TOKEN_MAX];
     int64_t number;
-    unsigned int line;
+    char text[STR_MAX];
 } token_t;
 
-typedef struct {
-    char name[VARIABLE_NAME_MAX];
-    int type;
-    int64_t number;
-    char string[STRING_MAX];
-} variable_t;
+static variable_t vars[VAR_MAX];
+static unsigned int var_count;
+static token_t toks[TOK_MAX];
+static unsigned int ntok, pos;
+static const char *expr_src;
+static int expr_error;
+static unsigned int current_line;
 
-typedef struct {
-    int type;
-    int64_t number;
-    char string[STRING_MAX];
-} value_t;
-
-static char source[SOURCE_MAX + 1];
-static const char *cursor;
-static token_t token;
-
-static variable_t variables[VARIABLE_MAX];
-static unsigned int variable_count;
-
-static unsigned int line_number;
-static int failed;
-
-/* ---------------------------------------------------------
- * STRING HELPERS
- * --------------------------------------------------------- */
-
-static void copy_string(char *dst, const char *src, size_t cap)
+static void copystr(char *d, const char *s, size_t cap)
 {
     size_t i = 0;
-
-    if (!cap)
-        return;
-
-    while (src[i] && i + 1 < cap) {
-        dst[i] = src[i];
-        i++;
-    }
-
-    dst[i] = '\0';
+    if (!cap) return;
+    while (s[i] && i + 1 < cap) { d[i] = s[i]; i++; }
+    d[i] = 0;
 }
 
-static int string_equal(const char *a, const char *b)
+static void say_error(const char *s)
 {
-    return p_streq(a, b);
-}
-
-static void value_string(value_t *v, const char *s)
-{
-    v->type = 1;
-    v->number = 0;
-    copy_string(v->string, s, sizeof(v->string));
-}
-
-static void value_number(value_t *v, int64_t n)
-{
-    v->type = 0;
-    v->number = n;
-    v->string[0] = '\0';
-}
-
-static void number_to_string(int64_t n, char *out, size_t cap)
-{
-    char temp[32];
-    unsigned int count = 0;
-    unsigned int pos = 0;
-    uint64_t value;
-
-    if (!cap)
-        return;
-
-    if (n < 0)
-        value = (uint64_t)(-(n + 1)) + 1;
-    else
-        value = (uint64_t)n;
-
-    do {
-        temp[count++] = (char)('0' + value % 10);
-        value /= 10;
-    } while (value && count < sizeof(temp));
-
-    if (n < 0 && pos + 1 < cap)
-        out[pos++] = '-';
-
-    while (count && pos + 1 < cap)
-        out[pos++] = temp[--count];
-
-    out[pos] = '\0';
-}
-
-static void value_to_string(value_t *v, char *out, size_t cap)
-{
-    if (v->type)
-        copy_string(out, v->string, cap);
-    else
-        number_to_string(v->number, out, cap);
-}
-
-static int value_truth(value_t *v)
-{
-    if (v->type)
-        return v->string[0] != '\0';
-
-    return v->number != 0;
-}
-
-static void print_value(value_t *v)
-{
-    if (v->type) {
-        p_puts(v->string);
-    } else if (v->number < 0) {
-        char buffer[32];
-        number_to_string(v->number, buffer, sizeof(buffer));
-        p_puts(buffer);
-    } else {
-        p_u64((uint64_t)v->number);
-    }
-
-    p_putc('\n');
-}
-
-/* ---------------------------------------------------------
- * ERROR HANDLING
- * --------------------------------------------------------- */
-
-static void error(const char *message)
-{
-    if (failed)
-        return;
-
-    failed = 1;
-
-    p_puts("IYS error at line ");
-    p_u64(token.line);
+    p_puts("IYS: line ");
+    p_u64(current_line);
     p_puts(": ");
-    p_putln(message);
+    p_putln(s);
 }
 
-/* ---------------------------------------------------------
- * LEXER
- * --------------------------------------------------------- */
-
-static int is_alpha(char c)
+static value_t vint(int64_t n)
 {
-    return (c >= 'a' && c <= 'z') ||
-           (c >= 'A' && c <= 'Z') ||
-           c == '_';
+    value_t v;
+    memset(&v, 0, sizeof(v));
+    v.type = V_INT;
+    v.n = n;
+    return v;
 }
 
-static int is_digit(char c)
+static value_t vbool(int b)
 {
-    return c >= '0' && c <= '9';
+    value_t v = vint(!!b);
+    v.type = V_BOOL;
+    return v;
 }
 
-static int is_alnum(char c)
+static value_t vstr(const char *s)
 {
-    return is_alpha(c) || is_digit(c);
+    value_t v;
+    memset(&v, 0, sizeof(v));
+    v.type = V_STR;
+    copystr(v.s, s, sizeof(v.s));
+    return v;
 }
 
-static void next_token(void)
+static int truth(value_t v)
 {
-    token.text[0] = '\0';
-    token.number = 0;
+    if (v.type == V_STR) return v.s[0] != 0;
+    return v.n != 0;
+}
 
-    for (;;) {
-        char c = *cursor;
+static void value_text(value_t v, char *out, size_t cap)
+{
+    if (v.type == V_STR) { copystr(out, v.s, cap); return; }
+    if (v.type == V_BOOL) { copystr(out, v.n ? "True" : "False", cap); return; }
 
-        if (c == ' ' || c == '\t' || c == '\r') {
-            cursor++;
+    char rev[32];
+    unsigned int n = 0, p = 0;
+    uint64_t x;
+    if (!cap) return;
+    if (v.n < 0) x = (uint64_t)(-(v.n + 1)) + 1;
+    else x = (uint64_t)v.n;
+    do { rev[n++] = (char)('0' + x % 10); x /= 10; } while (x && n < sizeof(rev));
+    if (v.n < 0 && p + 1 < cap) out[p++] = '-';
+    while (n && p + 1 < cap) out[p++] = rev[--n];
+    out[p] = 0;
+}
+
+static int find_var(const char *name)
+{
+    for (unsigned int i = 0; i < var_count; i++)
+        if (p_streq(vars[i].name, name)) return (int)i;
+    return -1;
+}
+
+static int set_var(const char *name, value_t v)
+{
+    int i = find_var(name);
+    if (i < 0) {
+        if (var_count >= VAR_MAX) return 0;
+        i = (int)var_count++;
+        copystr(vars[i].name, name, sizeof(vars[i].name));
+    }
+    vars[i].value = v;
+    return 1;
+}
+
+/* ---------------- expression lexer ---------------- */
+
+static int alpha_(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+static int digit_(char c) { return c >= '0' && c <= '9'; }
+
+static int tokenize(const char *s)
+{
+    ntok = pos = 0;
+    expr_src = s;
+    expr_error = 0;
+
+    while (*s) {
+        while (*s == ' ' || *s == '\t' || *s == '\r') s++;
+        if (!*s) break;
+        if (ntok + 1 >= TOK_MAX) { expr_error = 1; break; }
+
+        token_t *t = &toks[ntok++];
+        memset(t, 0, sizeof(*t));
+
+        if (digit_(*s)) {
+            uint64_t n = 0;
+            while (digit_(*s)) {
+                n = n * 10 + (unsigned)(*s - '0');
+                if (n > 9223372036854775807ull) { expr_error = 1; break; }
+                s++;
+            }
+            t->kind = T_NUM;
+            t->number = (int64_t)n;
             continue;
         }
 
-        if (c == '#') {
-            while (*cursor && *cursor != '\n')
-                cursor++;
-
+        if (alpha_(*s)) {
+            unsigned int n = 0;
+            while (alpha_(*s) || digit_(*s)) {
+                if (n + 1 < sizeof(t->text)) t->text[n++] = *s;
+                s++;
+            }
+            t->text[n] = 0;
+            t->kind = T_ID;
+            if (p_streq(t->text, "and")) t->kind = T_AND;
+            if (p_streq(t->text, "or")) t->kind = T_OR;
+            if (p_streq(t->text, "not")) t->kind = T_NOT;
             continue;
         }
 
-        break;
-    }
-
-    token.line = line_number;
-
-    char c = *cursor;
-
-    if (!c) {
-        token.kind = TOK_EOF;
-        return;
-    }
-
-    if (c == '\n') {
-        cursor++;
-        line_number++;
-        token.kind = TOK_NEWLINE;
-        return;
-    }
-
-    if (is_alpha(c)) {
-        unsigned int n = 0;
-
-        while (is_alnum(*cursor)) {
-            if (n + 1 >= TOKEN_MAX) {
-                error("Identifier too long.");
-                return;
-            }
-
-            token.text[n++] = *cursor++;
-        }
-
-        token.text[n] = '\0';
-        token.kind = TOK_ID;
-        return;
-    }
-
-    if (is_digit(c)) {
-        uint64_t value = 0;
-
-        while (is_digit(*cursor)) {
-            unsigned int digit = (unsigned int)(*cursor - '0');
-
-            if (value > 922337203685477580ULL ||
-                (value == 922337203685477580ULL && digit > 7)) {
-                error("Integer overflow.");
-                return;
-            }
-
-            value = value * 10 + digit;
-            cursor++;
-        }
-
-        token.number = (int64_t)value;
-        token.kind = TOK_NUMBER;
-        return;
-    }
-
-    if (c == '"') {
-        cursor++;
-
-        unsigned int n = 0;
-
-        while (*cursor && *cursor != '"') {
-            char ch = *cursor++;
-
-            if (ch == '\n') {
-                error("Unterminated string.");
-                return;
-            }
-
-            if (ch == '\\') {
-                ch = *cursor++;
-
-                switch (ch) {
-                case 'n': ch = '\n'; break;
-                case 't': ch = '\t'; break;
-                case 'r': ch = '\r'; break;
-                case '\\': break;
-                case '"': break;
-
-                default:
-                    error("Unknown string escape.");
-                    return;
+        if (*s == '"') {
+            unsigned int n = 0;
+            s++;
+            while (*s && *s != '"') {
+                char c = *s++;
+                if (c == '\\' && *s) {
+                    c = *s++;
+                    if (c == 'n') c = '\n';
+                    else if (c == 't') c = '\t';
+                    else if (c != '\\' && c != '"') { expr_error = 1; break; }
                 }
+                if (n + 1 < sizeof(t->text)) t->text[n++] = c;
             }
-
-            if (n + 1 >= TOKEN_MAX) {
-                error("String too long.");
-                return;
-            }
-
-            token.text[n++] = ch;
+            if (*s != '"') expr_error = 1;
+            else s++;
+            t->text[n] = 0;
+            t->kind = T_STR;
+            continue;
         }
 
-        if (*cursor != '"') {
-            error("Unterminated string.");
-            return;
-        }
-
-        cursor++;
-        token.text[n] = '\0';
-        token.kind = TOK_STRING;
-        return;
+        if (s[0] == '=' && s[1] == '=') { t->kind = T_EQ; s += 2; continue; }
+        if (s[0] == '!' && s[1] == '=') { t->kind = T_NE; s += 2; continue; }
+        if (s[0] == '<' && s[1] == '=') { t->kind = T_LE; s += 2; continue; }
+        if (s[0] == '>' && s[1] == '=') { t->kind = T_GE; s += 2; continue; }
+        t->kind = (unsigned char)*s++;
     }
-
-    cursor++;
-
-    if (c == '=' && *cursor == '=') {
-        cursor++;
-        token.kind = TOK_EQEQ;
-        return;
-    }
-
-    if (c == '!' && *cursor == '=') {
-        cursor++;
-        token.kind = TOK_NEQ;
-        return;
-    }
-
-    if (c == '<' && *cursor == '=') {
-        cursor++;
-        token.kind = TOK_LTE;
-        return;
-    }
-
-    if (c == '>' && *cursor == '=') {
-        cursor++;
-        token.kind = TOK_GTE;
-        return;
-    }
-
-    token.kind = (unsigned char)c;
+    toks[ntok].kind = T_END;
+    return !expr_error;
 }
 
-static void advance(void)
+static token_t *peek(void) { return &toks[pos]; }
+static int accept(int k) { if (peek()->kind == k) { pos++; return 1; } return 0; }
+
+static value_t parse_or(void);
+
+static value_t primary(void)
 {
-    if (!failed)
-        next_token();
-}
+    token_t t = *peek();
+    if (accept(T_NUM)) return vint(t.number);
+    if (accept(T_STR)) return vstr(t.text);
 
-static int accept(int kind)
-{
-    if (token.kind != kind)
-        return 0;
-
-    advance();
-    return 1;
-}
-
-static int expect(int kind, const char *message)
-{
-    if (token.kind != kind) {
-        error(message);
-        return 0;
-    }
-
-    advance();
-    return 1;
-}
-
-static void skip_lines(void)
-{
-    while (!failed &&
-           (token.kind == TOK_NEWLINE || token.kind == ';'))
-        advance();
-}
-
-/* ---------------------------------------------------------
- * VARIABLES
- * --------------------------------------------------------- */
-
-static variable_t *find_variable(const char *name)
-{
-    for (unsigned int i = 0; i < variable_count; i++) {
-        if (string_equal(variables[i].name, name))
-            return &variables[i];
-    }
-
-    return 0;
-}
-
-static void set_variable(const char *name, value_t *value)
-{
-    variable_t *v = find_variable(name);
-
-    if (!v) {
-        if (variable_count >= VARIABLE_MAX) {
-            error("Too many variables.");
-            return;
-        }
-
-        v = &variables[variable_count++];
-        copy_string(v->name, name, sizeof(v->name));
-    }
-
-    v->type = value->type;
-    v->number = value->number;
-
-    copy_string(v->string, value->string, sizeof(v->string));
-}
-
-static void get_variable(const char *name, value_t *out)
-{
-    variable_t *v = find_variable(name);
-
-    if (!v) {
-        error("Undefined variable.");
-        return;
-    }
-
-    out->type = v->type;
-    out->number = v->number;
-
-    copy_string(out->string, v->string, sizeof(out->string));
-}
-
-/* ---------------------------------------------------------
- * EXPRESSION PARSER
- * --------------------------------------------------------- */
-
-static value_t expression(int execute);
-
-static value_t primary(int execute)
-{
-    value_t result;
-    value_number(&result, 0);
-
-    if (token.kind == TOK_NUMBER) {
-        result.number = token.number;
-        advance();
-        return result;
-    }
-
-    if (token.kind == TOK_STRING) {
-        value_string(&result, token.text);
-        advance();
-        return result;
-    }
-
-    if (token.kind == TOK_ID) {
-        char name[VARIABLE_NAME_MAX];
-
-        copy_string(name, token.text, sizeof(name));
-        advance();
-
-        if (execute)
-            get_variable(name, &result);
-
-        return result;
+    if (accept(T_ID)) {
+        if (p_streq(t.text, "True")) return vbool(1);
+        if (p_streq(t.text, "False")) return vbool(0);
+        if (p_streq(t.text, "None")) return vint(0);
+        int i = find_var(t.text);
+        if (i < 0) { expr_error = 1; return vint(0); }
+        return vars[i].value;
     }
 
     if (accept('(')) {
-        result = expression(execute);
-        expect(')', "Expected closing parenthesis.");
-        return result;
-    }
-
-    error("Expected a value.");
-    return result;
-}
-
-static value_t unary(int execute)
-{
-    if (accept('-')) {
-        value_t v = unary(execute);
-
-        if (execute) {
-            if (v.type) {
-                error("Cannot negate a string.");
-            } else if (v.number == INT64_MIN) {
-                error("Integer overflow.");
-            } else {
-                v.number = -v.number;
-            }
-        }
-
+        value_t v = parse_or();
+        if (!accept(')')) expr_error = 1;
         return v;
     }
 
-    return primary(execute);
+    expr_error = 1;
+    return vint(0);
 }
 
-static int checked_add(int64_t a, int64_t b, int64_t *out)
+static value_t unary(void)
 {
-    if (b > 0 && a > INT64_MAX - b)
-        return 0;
+    if (accept('-')) {
+        value_t v = unary();
+        if (v.type == V_STR) expr_error = 1;
+        else if (v.n == (-9223372036854775807ll - 1)) expr_error = 1;
+        else v.n = -v.n;
+        return v;
+    }
+    if (accept(T_NOT)) return vbool(!truth(unary()));
+    return primary();
+}
 
-    if (b < 0 && a < INT64_MIN - b)
-        return 0;
+static value_t mul(void)
+{
+    value_t a = unary();
+    while (peek()->kind == '*' || peek()->kind == '/' || peek()->kind == '%') {
+        int op = peek()->kind; pos++;
+        value_t b = unary();
+        if (a.type == V_STR || b.type == V_STR || ((op == '/' || op == '%') && b.n == 0)) {
+            expr_error = 1; return vint(0);
+        }
+        if (op == '*') a.n *= b.n;
+        else if (op == '/') a.n /= b.n;
+        else a.n %= b.n;
+        a.type = V_INT;
+    }
+    return a;
+}
 
-    *out = a + b;
+static value_t add(void)
+{
+    value_t a = mul();
+    while (peek()->kind == '+' || peek()->kind == '-') {
+        int op = peek()->kind; pos++;
+        value_t b = mul();
+        if (op == '+' && (a.type == V_STR || b.type == V_STR)) {
+            char x[STR_MAX], y[STR_MAX], z[STR_MAX];
+            value_text(a, x, sizeof(x)); value_text(b, y, sizeof(y));
+            copystr(z, x, sizeof(z));
+            size_t n = p_strlen(z), j = 0;
+            while (y[j] && n + 1 < sizeof(z)) z[n++] = y[j++];
+            z[n] = 0;
+            a = vstr(z);
+        } else {
+            if (a.type == V_STR || b.type == V_STR) { expr_error = 1; return vint(0); }
+            if (op == '+') a.n += b.n; else a.n -= b.n;
+            a.type = V_INT;
+        }
+    }
+    return a;
+}
+
+static int compare(value_t a, value_t b)
+{
+    if (a.type == V_STR || b.type == V_STR) {
+        char x[STR_MAX], y[STR_MAX];
+        value_text(a, x, sizeof(x)); value_text(b, y, sizeof(y));
+        int c = 0;
+        while (x[c] && y[c] && x[c] == y[c]) c++;
+        return (unsigned char)x[c] - (unsigned char)y[c];
+    }
+    return a.n < b.n ? -1 : a.n > b.n ? 1 : 0;
+}
+
+static value_t comparison(void)
+{
+    value_t a = add();
+    int op = peek()->kind;
+    if (op == T_EQ || op == T_NE || op == '<' || op == '>' || op == T_LE || op == T_GE) {
+        pos++;
+        value_t b = add();
+        int c = compare(a, b);
+        return vbool(op == T_EQ ? c == 0 : op == T_NE ? c != 0 :
+                     op == '<' ? c < 0 : op == '>' ? c > 0 :
+                     op == T_LE ? c <= 0 : c >= 0);
+    }
+    return a;
+}
+
+static value_t parse_and(void)
+{
+    value_t a = comparison();
+    while (accept(T_AND)) { value_t b = comparison(); a = vbool(truth(a) && truth(b)); }
+    return a;
+}
+
+static value_t parse_or(void)
+{
+    value_t a = parse_and();
+    while (accept(T_OR)) { value_t b = parse_and(); a = vbool(truth(a) || truth(b)); }
+    return a;
+}
+
+static int eval(const char *s, value_t *out)
+{
+    if (!tokenize(s)) return 0;
+    *out = parse_or();
+    return !expr_error && peek()->kind == T_END;
+}
+
+/* ---------------- statements / Python indentation ---------------- */
+
+typedef struct {
+    char text[LINE_MAX];
+    unsigned int indent;
+    unsigned int number;
+} line_t;
+
+static line_t lines[256];
+static unsigned int line_count;
+
+static int prepare_lines(const char *src)
+{
+    line_count = 0;
+    unsigned int line = 1;
+    while (*src) {
+        if (line_count >= 256) return 0;
+        line_t *l = &lines[line_count];
+        memset(l, 0, sizeof(*l));
+        l->number = line;
+        while (*src == ' ' || *src == '\t') {
+            l->indent += (*src == '\t') ? 4 : 1;
+            src++;
+        }
+        unsigned int n = 0;
+        int quoted = 0;
+        while (*src && *src != '\n' && *src != '\r') {
+            char c = *src++;
+            if (c == '"' && (n == 0 || l->text[n-1] != '\\')) quoted = !quoted;
+            if (c == '#' && !quoted) {
+                while (*src && *src != '\n') src++;
+                break;
+            }
+            if (n + 1 < sizeof(l->text)) l->text[n++] = c;
+        }
+        l->text[n] = 0;
+        if (*src == '\r') src++;
+        if (*src == '\n') { src++; line++; }
+        line_count++;
+    }
     return 1;
 }
 
-static int checked_subtract(int64_t a, int64_t b, int64_t *out)
+static int starts(const char *s, const char *prefix)
 {
-    if (b < 0 && a > INT64_MAX + b)
-        return 0;
-
-    if (b > 0 && a < INT64_MIN + b)
-        return 0;
-
-    *out = a - b;
+    while (*prefix) if (*s++ != *prefix++) return 0;
     return 1;
 }
 
-static int checked_multiply(int64_t a, int64_t b, int64_t *out)
+static char *trim(char *s)
 {
-    if (!a || !b) {
-        *out = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    size_t n = p_strlen(s);
+    while (n && (s[n-1] == ' ' || s[n-1] == '\t')) s[--n] = 0;
+    return s;
+}
+
+static int valid_name(const char *s)
+{
+    if (!alpha_(*s)) return 0;
+    while (*s) { if (!alpha_(*s) && !digit_(*s)) return 0; s++; }
+    return 1;
+}
+
+static int exec_simple(char *s)
+{
+    s = trim(s);
+    if (!*s) return 1;
+
+    if (starts(s, "print") && s[5] == '(') {
+        char *p = s + 6;
+        char arg[STR_MAX];
+        int depth = 0, quote = 0, first = 1;
+        while (*p && *p != ')') {
+            char *start = p;
+            depth = 0; quote = 0;
+            while (*p) {
+                if (*p == '"' && (p == start || p[-1] != '\\')) quote = !quote;
+                if (!quote && *p == '(') depth++;
+                if (!quote && *p == ')') { if (!depth) break; depth--; }
+                if (!quote && !depth && *p == ',') break;
+                p++;
+            }
+            size_t n = (size_t)(p - start);
+            if (n >= sizeof(arg)) return 0;
+            memcpy(arg, start, n); arg[n] = 0;
+            value_t v;
+            if (!eval(trim(arg), &v)) return 0;
+            if (!first) p_putc(' ');
+            char out[STR_MAX]; value_text(v, out, sizeof(out)); p_puts(out);
+            first = 0;
+            if (*p == ',') p++;
+            else break;
+        }
+        if (*p != ')') return 0;
+        p_putc('\n');
         return 1;
     }
 
-    if ((a == -1 && b == INT64_MIN) ||
-        (b == -1 && a == INT64_MIN))
-        return 0;
+    /* Assignment: identifier = expression (not ==). */
+    char *eq = 0;
+    int quote = 0, depth = 0;
+    for (char *p = s; *p; p++) {
+        if (*p == '"' && (p == s || p[-1] != '\\')) quote = !quote;
+        if (!quote && *p == '(') depth++;
+        if (!quote && *p == ')') depth--;
+        if (!quote && !depth && *p == '=' && p[1] != '=' && (p == s || p[-1] != '=')) { eq = p; break; }
+    }
+    if (!eq) return 0;
+    *eq = 0;
+    char *name = trim(s);
+    if (!valid_name(name)) return 0;
+    value_t v;
+    if (!eval(trim(eq + 1), &v)) return 0;
+    return set_var(name, v);
+}
 
-    if (a > 0) {
-        if (b > 0) {
-            if (a > INT64_MAX / b)
-                return 0;
-        } else if (b < INT64_MIN / a) {
-            return 0;
-        }
+static int run_lines(unsigned int *index, unsigned int parent_indent);
+
+static int run_if(unsigned int *index, unsigned int indent)
+{
+    line_t *l = &lines[*index];
+    char cond[LINE_MAX];
+    copystr(cond, trim(l->text) + 3, sizeof(cond));
+    char *colon = cond + p_strlen(cond);
+    while (colon > cond && colon[-1] == ' ') colon--;
+    if (colon == cond || colon[-1] != ':') return 0;
+    colon[-1] = 0;
+
+    value_t v;
+    if (!eval(trim(cond), &v)) return 0;
+    int take_then = truth(v);
+    (*index)++;
+
+    if (*index >= line_count || lines[*index].indent <= indent) return 0;
+    unsigned int child_indent = lines[*index].indent;
+
+    if (take_then) {
+        if (!run_lines(index, child_indent)) return 0;
     } else {
-        if (b > 0) {
-            if (a < INT64_MIN / b)
-                return 0;
-        } else if (a < INT64_MAX / b) {
-            return 0;
-        }
+        while (*index < line_count && (lines[*index].text[0] == 0 ||
+               lines[*index].indent >= child_indent)) (*index)++;
     }
 
-    *out = a * b;
+    /* Optional else at the same indentation. */
+    while (*index < line_count && !lines[*index].text[0]) (*index)++;
+    if (*index < line_count && lines[*index].indent == indent &&
+        starts(trim(lines[*index].text), "else:")) {
+        (*index)++;
+        if (*index >= line_count || lines[*index].indent <= indent) return 0;
+        unsigned int else_indent = lines[*index].indent;
+        if (!take_then) {
+            if (!run_lines(index, else_indent)) return 0;
+        } else {
+            while (*index < line_count && (lines[*index].text[0] == 0 ||
+                   lines[*index].indent >= else_indent)) (*index)++;
+        }
+    }
     return 1;
 }
 
-static value_t multiply(int execute)
+static int run_lines(unsigned int *index, unsigned int parent_indent)
 {
-    value_t left = unary(execute);
+    while (*index < line_count) {
+        line_t *l = &lines[*index];
+        if (!l->text[0]) { (*index)++; continue; }
+        if (l->indent < parent_indent) return 1;
+        if (l->indent > parent_indent) return 0;
+        current_line = l->number;
+        char *s = trim(l->text);
 
-    while (token.kind == '*' || token.kind == '/' || token.kind == '%') {
-        int op = token.kind;
-        advance();
-
-        value_t right = unary(execute);
-
-        if (!execute)
-            continue;
-
-        if (left.type || right.type) {
-            error("Arithmetic requires numbers.");
+        if (starts(s, "if ") && p_strlen(s) > 4) {
+            if (!run_if(index, parent_indent)) return 0;
             continue;
         }
-
-        if ((op == '/' || op == '%') && right.number == 0) {
-            error("Division by zero.");
-            continue;
-        }
-
-        if ((op == '/' || op == '%') &&
-            left.number == INT64_MIN && right.number == -1) {
-            error("Integer overflow.");
-            continue;
-        }
-
-        if (op == '*') {
-            int64_t result;
-
-            if (!checked_multiply(left.number, right.number, &result)) {
-                error("Integer overflow.");
-                continue;
-            }
-
-            left.number = result;
-        } else if (op == '/') {
-            left.number /= right.number;
-        } else {
-            left.number %= right.number;
-        }
+        if (starts(s, "else:")) return 1;
+        if (!exec_simple(s)) return 0;
+        (*index)++;
     }
-
-    return left;
+    return 1;
 }
 
-static value_t additive(int execute)
+static int execute_source(const char *src)
 {
-    value_t left = multiply(execute);
-
-    while (token.kind == '+' || token.kind == '-') {
-        int op = token.kind;
-        advance();
-
-        value_t right = multiply(execute);
-
-        if (!execute)
-            continue;
-
-        if (op == '-' && (left.type || right.type)) {
-            error("Subtraction requires numbers.");
-            continue;
-        }
-
-        if (op == '+') {
-            if (!left.type && !right.type) {
-                int64_t result;
-
-                if (!checked_add(left.number, right.number, &result)) {
-                    error("Integer overflow.");
-                    continue;
-                }
-
-                left.number = result;
-            } else {
-                char a[STRING_MAX];
-                char b[STRING_MAX];
-                char combined[STRING_MAX];
-
-                value_to_string(&left, a, sizeof(a));
-                value_to_string(&right, b, sizeof(b));
-
-                copy_string(combined, a, sizeof(combined));
-
-                size_t n = p_strlen(combined);
-                size_t i = 0;
-
-                while (b[i] && n + 1 < sizeof(combined))
-                    combined[n++] = b[i++];
-
-                combined[n] = '\0';
-
-                value_string(&left, combined);
-            }
-        } else {
-            int64_t result;
-
-            if (!checked_subtract(left.number, right.number, &result)) {
-                error("Integer overflow.");
-                continue;
-            }
-
-            left.number = result;
-        }
-    }
-
-    return left;
-}
-
-/* ---------------------------------------------------------
- * COMPARISON
- * --------------------------------------------------------- */
-
-static int compare_values(value_t *a, value_t *b)
-{
-    if (a->type || b->type) {
-        char sa[STRING_MAX];
-        char sb[STRING_MAX];
-
-        value_to_string(a, sa, sizeof(sa));
-        value_to_string(b, sb, sizeof(sb));
-
-        const char *pa = sa;
-        const char *pb = sb;
-
-        while (*pa && *pb && *pa == *pb) {
-            pa++;
-            pb++;
-        }
-
-        if ((unsigned char)*pa < (unsigned char)*pb)
-            return -1;
-
-        if ((unsigned char)*pa > (unsigned char)*pb)
-            return 1;
-
-        return 0;
-    }
-
-    if (a->number < b->number)
-        return -1;
-
-    if (a->number > b->number)
+    if (!prepare_lines(src)) { say_error("too many lines."); return 1; }
+    var_count = 0;
+    memset(vars, 0, sizeof(vars));
+    unsigned int i = 0;
+    if (!run_lines(&i, 0)) {
+        say_error("unsupported syntax or invalid expression.");
         return 1;
-
+    }
     return 0;
 }
 
-static value_t expression(int execute)
-{
-    value_t left = additive(execute);
-
-    while (token.kind == TOK_EQEQ ||
-           token.kind == TOK_NEQ ||
-           token.kind == '<' ||
-           token.kind == '>' ||
-           token.kind == TOK_LTE ||
-           token.kind == TOK_GTE) {
-
-        int op = token.kind;
-        advance();
-
-        value_t right = additive(execute);
-
-        if (!execute)
-            continue;
-
-        int cmp = compare_values(&left, &right);
-        int result = 0;
-
-        switch (op) {
-        case TOK_EQEQ: result = cmp == 0; break;
-        case TOK_NEQ:  result = cmp != 0; break;
-        case '<':      result = cmp < 0; break;
-        case '>':      result = cmp > 0; break;
-        case TOK_LTE:  result = cmp <= 0; break;
-        case TOK_GTE:  result = cmp >= 0; break;
-        }
-
-        value_number(&left, result);
-    }
-
-    return left;
-}
-
-/* ---------------------------------------------------------
- * STATEMENT PARSER
- * --------------------------------------------------------- */
-
-static void statement(int execute);
-
-static void block(int execute)
-{
-    if (!expect('{', "Expected opening brace."))
-        return;
-
-    skip_lines();
-
-    while (!failed && token.kind != TOK_EOF && token.kind != '}') {
-        statement(execute);
-
-        if (failed)
-            return;
-
-        skip_lines();
-    }
-
-    expect('}', "Expected closing brace.");
-}
-
-static void statement_if(int execute)
-{
-    advance();
-
-    value_t condition = expression(execute);
-    int condition_true = execute && value_truth(&condition);
-
-    if (!expect('{', "Expected '{' after condition."))
-        return;
-
-    block(condition_true);
-
-    if (failed)
-        return;
-
-    skip_lines();
-
-    if (token.kind == TOK_ID && string_equal(token.text, "else")) {
-        advance();
-
-        if (!expect('{', "Expected '{' after else."))
-            return;
-
-        block(execute && !value_truth(&condition));
-    }
-}
-
-static void statement_let(int execute)
-{
-    advance();
-
-    if (token.kind != TOK_ID) {
-        error("Expected variable name.");
-        return;
-    }
-
-    char name[VARIABLE_NAME_MAX];
-    copy_string(name, token.text, sizeof(name));
-
-    advance();
-
-    if (!expect('=', "Expected '=' after variable name."))
-        return;
-
-    value_t value = expression(execute);
-
-    if (execute && !failed)
-        set_variable(name, &value);
-}
-
-static void statement_print(int execute)
-{
-    advance();
-
-    if (!expect('(', "Expected '(' after print."))
-        return;
-
-    value_t value = expression(execute);
-
-    if (!expect(')', "Expected ')' after print expression."))
-        return;
-
-    if (execute && !failed)
-        print_value(&value);
-}
-
-static void statement_assignment(int execute)
-{
-    char name[VARIABLE_NAME_MAX];
-
-    copy_string(name, token.text, sizeof(name));
-    advance();
-
-    if (!expect('=', "Expected '=' in assignment."))
-        return;
-
-    value_t value = expression(execute);
-
-    if (execute && !failed)
-        set_variable(name, &value);
-}
-
-static void statement(int execute)
-{
-    if (failed || token.kind == TOK_EOF)
-        return;
-
-    if (token.kind == TOK_NEWLINE || token.kind == ';') {
-        advance();
-        return;
-    }
-
-    if (token.kind != TOK_ID) {
-        error("Expected a statement.");
-        return;
-    }
-
-    if (string_equal(token.text, "let")) {
-        statement_let(execute);
-        return;
-    }
-
-    if (string_equal(token.text, "print")) {
-        statement_print(execute);
-        return;
-    }
-
-    if (string_equal(token.text, "if")) {
-        statement_if(execute);
-        return;
-    }
-
-    statement_assignment(execute);
-}
-
-/* ---------------------------------------------------------
- * INTERPRETER
- * --------------------------------------------------------- */
-
-static int execute_source(const char *text)
-{
-    cursor = text;
-    line_number = 1;
-    failed = 0;
-
-    advance();
-    skip_lines();
-
-    while (token.kind != TOK_EOF && !failed) {
-        statement(1);
-        skip_lines();
-    }
-
-    return failed ? 1 : 0;
-}
-
-/* ---------------------------------------------------------
- * FILE LOADING
- * --------------------------------------------------------- */
+/* ---------------- file loading and REPL ---------------- */
 
 static int run_file(const char *filename)
 {
     char path[256];
-    int is_directory = 0;
+    int is_dir = 0;
     uint32_t size = 0;
-
     pieg->resolve(filename, path, sizeof(path));
-
-    int err = pieg->fs_stat(path, &is_directory, &size);
-
+    int err = pieg->fs_stat(path, &is_dir, &size);
     if (err) {
         p_puts("IYS: cannot access file: ");
         p_putln(pieg->fs_error(err));
         return 1;
     }
+    if (is_dir) { p_putln("IYS: expected a file."); return 1; }
+    if (size > SOURCE_MAX) { p_putln("IYS: script exceeds 32 KiB."); return 1; }
 
-    if (is_directory) {
-        p_putln("IYS: expected a file, not a directory.");
-        return 1;
-    }
-
-    if (size > SOURCE_MAX) {
-        p_putln("IYS: script exceeds maximum size of 32 KiB.");
-        return 1;
-    }
-
-    uint32_t offset = 0;
-
-    while (offset < size) {
-        uint32_t done = 0;
-        uint32_t amount = size - offset;
-
-        if (amount > 512)
-            amount = 512;
-
-        err = pieg->fs_read(path, offset, source + offset, amount, &done);
-
-        if (err) {
-            p_puts("IYS: read error: ");
-            p_putln(pieg->fs_error(err));
+    static char source[SOURCE_MAX + 1];
+    uint32_t off = 0;
+    while (off < size) {
+        uint32_t done = 0, amount = size - off;
+        if (amount > 512) amount = 512;
+        err = pieg->fs_read(path, off, source + off, amount, &done);
+        if (err || !done || done > amount) {
+            p_puts("IYS: file read failed: ");
+            p_putln(err ? pieg->fs_error(err) : "invalid read length");
             return 1;
         }
-
-        if (!done) {
-            p_putln("IYS: unexpected end of file.");
-            return 1;
-        }
-
-        if (done > amount) {
-            p_putln("IYS: filesystem returned an invalid read length.");
-            return 1;
-        }
-
-        offset += done;
+        off += done;
     }
-
-    source[size] = '\0';
-
-    p_puts("IYS ");
-    p_puts(IYS_VERSION);
-    p_puts(" executing ");
+    source[size] = 0;
+    p_puts("IYS executing ");
     p_putln(filename);
-
-    variable_count = 0;
-    memset(variables, 0, sizeof(variables));
-
     return execute_source(source);
 }
 
-/* ---------------------------------------------------------
- * INTERACTIVE REPL
- * --------------------------------------------------------- */
-
-static int read_line(char *buffer, size_t capacity)
+static int repl(void)
 {
-    size_t n = 0;
-
-    for (;;) {
-        char c = p_getc();
-
-        if (c == '\r' || c == '\n') {
-            p_putc('\n');
-            break;
-        }
-
-        if ((c == '\b' || (unsigned char)c == 127) && n) {
-            n--;
-            p_putc('\b');
-            p_putc(' ');
-            p_putc('\b');
-            continue;
-        }
-
-        if (c >= 32 && c < 127 && n + 1 < capacity) {
-            buffer[n++] = c;
-            p_putc(c);
-        }
-    }
-
-    buffer[n] = '\0';
-    return (int)n;
-}
-
-static void repl(void)
-{
+    char line[LINE_MAX];
     p_putln("IYS - Interpret Your Script");
-    p_putln("PIEG scripting interpreter");
-    p_putln("Type 'exit' to leave.");
-    p_putln("");
-
+    p_putln("Small Python-compatible interpreter for PIEG");
+    p_putln("Subset: variables, print, arithmetic, comparisons, if/else");
+    p_putln("Type exit to leave.");
     for (;;) {
-        p_puts("iys> ");
-
-        read_line(source, SOURCE_MAX + 1);
-
-        if (string_equal(source, "exit") ||
-            string_equal(source, "quit")) {
-            p_putln("Leaving IYS.");
-            return;
+        p_puts(">>> ");
+        unsigned int n = 0;
+        for (;;) {
+            char c = p_getc();
+            if (c == '\r' || c == '\n') { p_putc('\n'); break; }
+            if ((c == '\b' || (unsigned char)c == 127) && n) {
+                n--; p_putc('\b'); p_putc(' '); p_putc('\b');
+            } else if (c >= 32 && c < 127 && n + 1 < sizeof(line)) {
+                line[n++] = c; p_putc(c);
+            }
         }
-
-        if (!source[0])
-            continue;
-
-        execute_source(source);
+        line[n] = 0;
+        char *s = trim(line);
+        if (p_streq(s, "exit()") || p_streq(s, "quit()")) return 0;
+        if (!*s) continue;
+        current_line = 1;
+        if (!exec_simple(s)) say_error("unsupported REPL statement.");
     }
 }
-
-/* ---------------------------------------------------------
- * HELP
- * --------------------------------------------------------- */
-
-static void help(void)
-{
-    p_putln("IYS - Interpret Your Script");
-    p_putln("");
-    p_putln("Usage:");
-    p_putln("  iys");
-    p_putln("  iys FILE.YS");
-    p_putln("  iys --version");
-    p_putln("  iys --help");
-    p_putln("");
-    p_putln("Language:");
-    p_putln("  let name = \"PIEG\"");
-    p_putln("  let number = 10 + 5");
-    p_putln("  print(name)");
-    p_putln("  number = number * 2");
-    p_putln("");
-    p_putln("  if number > 10 {");
-    p_putln("      print(\"Greater than 10\")");
-    p_putln("  } else {");
-    p_putln("      print(\"Smaller or equal\")");
-    p_putln("  }");
-    p_putln("");
-    p_putln("Arithmetic:");
-    p_putln("  +  -  *  /  %");
-    p_putln("");
-    p_putln("Comparisons:");
-    p_putln("  ==  !=  <  >  <=  >=");
-    p_putln("");
-    p_putln("Comments begin with #.");
-}
-
-/* ---------------------------------------------------------
- * ENTRY POINT
- * --------------------------------------------------------- */
 
 int main(int argc, char **argv)
 {
     if (!pieg || pieg->version < 4) {
-        p_putln("IYS requires PIEG API version 4.");
+        p_putln("IYS: PIEG API version 4 required.");
         return 1;
     }
-
-    variable_count = 0;
-    memset(variables, 0, sizeof(variables));
-
-    if (argc < 2) {
-        repl();
-        return 0;
-    }
-
-    if (string_equal(argv[1], "--version")) {
-        p_putln("IYS " IYS_VERSION);
-        return 0;
-    }
-
-    if (string_equal(argv[1], "--help") ||
-        string_equal(argv[1], "help")) {
-        help();
-        return 0;
-    }
-
     if (argc > 2) {
-        p_putln("IYS currently accepts one script at a time.");
-        return 1;
+        p_putln("Usage: iys [script.py]");
+        return 2;
     }
-
+    if (argc == 1) return repl();
+    if (p_streq(argv[1], "--help") || p_streq(argv[1], "-h")) {
+        p_putln("IYS - small Python-compatible interpreter");
+        p_putln("Usage: iys [script.py]");
+        p_putln("Supports: variables, integers, strings, print(), arithmetic,");
+        p_putln("comparisons, and indented if/else blocks.");
+        return 0;
+    }
     return run_file(argv[1]);
 }

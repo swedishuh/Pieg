@@ -1,4 +1,3 @@
-
 CC := gcc
 ASM := nasm
 
@@ -19,6 +18,8 @@ C_SOURCES := \
 	kernel/scheduler.c \
 	kernel/terminal.c \
 	kernel/keyboard.c \
+	kernel/kbdlayout.c \
+	kernel/sound.c \
 	kernel/blockdev.c \
 	kernel/fat.c \
 	kernel/panic.c \
@@ -26,6 +27,7 @@ C_SOURCES := \
 	kernel/pci.c \
 	kernel/ata.c \
 	kernel/ahci.c \
+	kernel/usb.c \
 	kernel/gpt.c \
 	kernel/mkfat.c \
 	kernel/persist.c \
@@ -63,11 +65,15 @@ FS_README := filesystem/README
 FS_HELLO := filesystem/hello.ys
 FS_IYS_GUIDE := filesystem/YSGUIDE
 
+# Keyboard layouts: Keyboard/*.kbd -> /INPUTDEV/KEYBOARD/*.KBD
+KBD_DIR := Keyboard
+KBD_LAYOUTS := $(wildcard $(KBD_DIR)/*.kbd)
+
 FS_IMG := $(BUILD)/pieg-fs.img
 DISK_IMG := $(BUILD)/pieg-disk.img
 DISK_PART_OFFSET := 1048576
 
-.PHONY: host-test run-uefi all clean iso iso-uefi iso-legacy run run-live disk disk-reset fsimg check-tools programs install-programs
+.PHONY: host-test run-uefi run-usb all clean iso iso-uefi iso-legacy run run-live disk disk-reset fsimg check-tools programs install-programs
 
 all: $(BUILD)/pieg.elf
 
@@ -103,6 +109,18 @@ define INSTALL_PROGRAMS
 	done
 endef
 
+# Creates /INPUTDEV (KEYBOARD, MOUSE, CUSTOM) and copies the layouts into it.
+# Safe to repeat on an existing image: directories that exist are left alone.
+define INSTALL_KEYBOARD
+	for d in INPUTDEV INPUTDEV/KEYBOARD INPUTDEV/MOUSE INPUTDEV/CUSTOM; do \
+		mdir -i $(1) ::/$$d </dev/null >/dev/null 2>&1 || \
+			mmd -i $(1) ::/$$d </dev/null || exit 1; \
+	done
+	for f in $(KBD_LAYOUTS); do \
+		mcopy -o -i $(1) $$f ::/INPUTDEV/KEYBOARD/$$(basename $$f | tr a-z A-Z) || exit 1; \
+	done
+endef
+
 # ---- Build requirements ----
 
 check-tools:
@@ -125,7 +143,7 @@ check-tools:
 
 fsimg: $(FS_IMG)
 
-$(FS_IMG): $(BUILD)/pieg.elf $(PROGRAM_ELFS) $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) check-tools | $(BUILD)
+$(FS_IMG): $(BUILD)/pieg.elf $(PROGRAM_ELFS) $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) $(KBD_LAYOUTS) check-tools | $(BUILD)
 	rm -f $@
 	dd if=/dev/zero of=$@ bs=1M count=16 status=none
 	mkfs.fat -F 16 -n PIEG $@ >/dev/null
@@ -138,6 +156,7 @@ $(FS_IMG): $(BUILD)/pieg.elf $(PROGRAM_ELFS) $(FS_README) $(FS_HELLO) $(FS_IYS_G
 	mcopy -i $@ $(FS_IYS_GUIDE) ::/U/HOME/YSGUIDE.TXT
 
 	$(call INSTALL_PROGRAMS,$@)
+	$(call INSTALL_KEYBOARD,$@)
 
 # ---- ISO images ----
 
@@ -159,7 +178,7 @@ iso-legacy: $(BUILD)/pieg.elf $(FS_IMG) check-tools
 
 disk: $(DISK_IMG)
 
-$(DISK_IMG): $(BUILD)/pieg.elf $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) check-tools | $(BUILD)
+$(DISK_IMG): $(BUILD)/pieg.elf $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) $(KBD_LAYOUTS) check-tools | $(BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=64 status=none
 	printf 'label: dos\nstart=2048, type=e\n' | sfdisk -q $@
 	mkfs.fat -F 16 -n PIEG --offset 2048 $@ 64512 >/dev/null
@@ -171,9 +190,12 @@ $(DISK_IMG): $(BUILD)/pieg.elf $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) check-to
 	mcopy -i $@@@$(DISK_PART_OFFSET) $(FS_HELLO) ::/U/HOME/EXAMPLE/HELLO.YS
 	mcopy -i $@@@$(DISK_PART_OFFSET) $(FS_IYS_GUIDE) ::/U/HOME/YSGUIDE.TXT
 
+	$(call INSTALL_KEYBOARD,$@@@$(DISK_PART_OFFSET))
+
 # Refreshes programs on the persistent disk.
 install-programs: $(PROGRAM_ELFS) $(DISK_IMG)
 	$(call INSTALL_PROGRAMS,$(DISK_IMG)@@$(DISK_PART_OFFSET))
+	$(call INSTALL_KEYBOARD,$(DISK_IMG)@@$(DISK_PART_OFFSET))
 
 disk-reset:
 	rm -f $(DISK_IMG)
@@ -185,8 +207,8 @@ run-live: iso-legacy
 	qemu-system-x86_64 -m 512M -boot order=d -cdrom $(BUILD)/pieg-legacy.iso -monitor stdio
 
 run: iso-legacy disk install-programs
-	@printf '\nLaunch PIEG in QEMU? [y/N] '; \
-	read answer; \
+	@printf '\nLaunch PIEG in QEMU? [y/N] ' >&2; \
+	read answer </dev/tty; \
 	case "$$answer" in \
 		y|Y|yes|YES) \
 			qemu-system-x86_64 \
@@ -216,6 +238,16 @@ run-uefi: iso-uefi $(SATA_IMG)
 		-drive file=$(SATA_IMG),format=raw,if=ide,index=0 \
 		-cdrom $(BUILD)/pieg-uefi.iso -boot d -monitor stdio
 
+# ---- USB 2.0 (EHCI) test: boots the live ISO from a USB stick ----
+
+run-usb: iso-legacy $(SATA_IMG)
+	qemu-system-x86_64 -m 512M \
+		-device usb-ehci,id=ehci \
+		-drive if=none,id=usbiso,file=$(BUILD)/pieg-legacy.iso,format=raw \
+		-device usb-storage,bus=ehci.0,drive=usbiso,bootindex=0 \
+		-drive if=none,id=usbdata,file=$(SATA_IMG),format=raw \
+		-device usb-storage,bus=ehci.0,drive=usbdata -monitor stdio
+
 # ---- Host-side tests ----
 
 host-test: | $(BUILD)
@@ -223,6 +255,9 @@ host-test: | $(BUILD)
 		tests/hosttest.c kernel/gpt.c kernel/mkfat.c kernel/fat.c \
 		kernel/blockdev.c kernel/partition.c kernel/persist.c -o $(BUILD)/hosttest
 	$(BUILD)/hosttest
+	gcc -std=gnu11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Ikernel \
+		tests/kbdtest.c kernel/kbdlayout.c -o $(BUILD)/kbdtest
+	$(BUILD)/kbdtest $(KBD_DIR)
 
 # ---- Cleanup ----
 

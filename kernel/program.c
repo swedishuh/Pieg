@@ -13,12 +13,15 @@
 #include "program.h"
 #include "ramspec.h"
 #include "shellfs.h"
+#include "sound.h"
 
 extern void vga_putchar(char c);
 extern void vga_write(const char *text);
 extern void vga_clear(void);
 extern void vga_scroll_view(int direction);
 extern char keyboard_getchar(void);
+extern int keyboard_layout_load(const char *path);
+extern int keyboard_layout_info(char *code, char *name);
 
 /* ================================================================
  * Program memory
@@ -253,7 +256,27 @@ static int api_disk_info(unsigned int index, pieg_diskinfo_t *info)
     info->bytes = d.sectors * 512u;
     info->state = d.state;
     info->free_bytes = d.free_sectors * 512u;
+    info->bus = fs_disk_bus(index);
+    info->boot = fs_disk_boot(index);
 
+    return 1;
+}
+
+static int api_disk_part_info(unsigned int disk, unsigned int n,
+                              pieg_partinfo_t *info)
+{
+    uint64_t sectors;
+
+    if (!info)
+        return 0;
+
+    memset(info, 0, sizeof(*info));
+
+    if (!fs_part_info(disk, n, info->name, &info->start, &sectors,
+                      info->fstype, info->label))
+        return 0;
+
+    info->bytes = sectors * 512u;
     return 1;
 }
 
@@ -290,6 +313,16 @@ static void api_reboot(void)
         :
         : "al"
     );
+
+    /* Fallback 1: PCI reset control register (most modern chipsets). */
+    __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0x02), "Nd"((uint16_t)0xCF9));
+    __asm__ volatile ("outb %0, %1" : : "a"((uint8_t)0x06), "Nd"((uint16_t)0xCF9));
+
+    /* Fallback 2: triple fault with an empty IDT. */
+    static const struct { uint16_t limit; uint64_t base; }
+        __attribute__((packed)) null_idt = { 0, 0 };
+
+    __asm__ volatile ("lidt %0; int3" : : "m"(null_idt));
 
     for (;;)
         __asm__ volatile ("hlt");
@@ -345,6 +378,11 @@ static const pieg_api_t api = {
 
     .user_mode = 0,
     .fs_list_raw = usermode_fs_list_raw,
+    .sound_tone = speaker_tone,
+    .sound_stop = speaker_stop,
+    .disk_part_info = api_disk_part_info,
+    .kbd_load = keyboard_layout_load,
+    .kbd_info = keyboard_layout_info,
 };
 
 /* ================================================================
