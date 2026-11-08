@@ -541,6 +541,29 @@ static void execute_command(const char *line)
  * ENTRY POINT
  * ================================================================ */
 
+/*
+ * First boot: no saved keyboard layout yet, so run the setup program once.
+ * It is an ordinary program in /PROGRAMS; if it is missing nothing happens.
+ */
+static void autostart_setup(void)
+{
+    static bool offered;
+    bool is_dir = false;
+    uint32_t size = 0;
+    char *argv[] = { "setup", 0 };
+    int status;
+
+    if (offered || !fs_is_mounted())
+        return;
+
+    offered = true;
+
+    if (fs_stat("/INPUTDEV/KEYBOARD/KEYMAP.CFG", &is_dir, &size) == FAT_OK)
+        return;
+
+    program_run(1, argv, &status);
+}
+
 void terminal_run(void)
 {
     vga_clear();
@@ -553,6 +576,7 @@ void terminal_run(void)
     println("Type 'help' for commands.");
     shellfs_start();
     vga_putchar('\n');
+    autostart_setup();
 
     for (;;) {
         prompt();

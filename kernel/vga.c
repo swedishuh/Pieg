@@ -400,6 +400,20 @@ static void put_one(char c)
         redraw_screen();
 }
 
+/* Repaints the console after a graphical program gave the screen back. */
+void vga_redraw(void)
+{
+    redraw_screen();
+}
+
+/* 5x7 glyph columns for printable ASCII, or NULL. */
+const uint8_t *vga_glyph(char c)
+{
+    unsigned char u = (unsigned char)c;
+
+    return (u >= 32 && u <= 126) ? font5x7[u - 32] : 0;
+}
+
 void vga_putchar(char c)
 {
     put_one(c);

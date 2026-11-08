@@ -22,6 +22,7 @@ void p_putln(const char *s);
 void p_u64(uint64_t n);
 void p_hex(uint64_t n);
 void p_size(uint64_t bytes);
+void p_size_precise(uint64_t bytes);   /* two decimals: 4.27 MiB */
 
 /* Input: blocks until a key is pressed. */
 char p_getc(void);

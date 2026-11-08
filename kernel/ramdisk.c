@@ -94,7 +94,9 @@ unsigned int ramdisk_init(uint32_t magic, uint32_t mbi)
             uint32_t bytes = m->mod_end > m->mod_start
                            ? m->mod_end - m->mod_start : 0;
 
-            if (bytes >= 512) {
+            if (bytes < 512) {
+                vga_write("[RAMDISK] ignoring boot module smaller than 512 bytes\n");
+            } else {
                 blockdev_t *dev = &devices[count];
 
                 names[count][0] = 'r';
@@ -116,6 +118,8 @@ unsigned int ramdisk_init(uint32_t magic, uint32_t mbi)
                     print_u32(bytes / 1024u);
                     vga_write(" KiB\n");
                     count++;
+                } else {
+                    vga_write("[RAMDISK] could not register boot module\n");
                 }
             }
         }

@@ -36,9 +36,9 @@ keymap --test          type to try the layout, Ctrl+C ends
 ```
 
 "Kept" means the name is written to `/INPUTDEV/KEYBOARD/KEYMAP.CFG`. The
-kernel reads it right after the filesystem mounts, before the login prompt,
-so the login also uses the saved layout. A missing, unreadable or invalid
-config leaves the built-in US layout.
+kernel reads it right after the filesystem mounts, before the "press any
+key" screen, so the shell starts with the saved layout. A missing, unreadable
+or invalid config leaves the built-in US layout.
 
 AltGr is the right Alt key. Ctrl+letter follows the layout, so on Dvorak the
 key in the QWERTY C position gives Ctrl+J.

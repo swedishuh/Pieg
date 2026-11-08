@@ -3,8 +3,8 @@
 
 #include <stdbool.h>
 
-#define PIEG_SHELL_VERSION "0.8.1"
-#define PIEG_RELEASE_NAME  "Tea Lake"
+#define PIEG_SHELL_VERSION "0.9"
+#define PIEG_RELEASE_NAME  "Mountain"
 
 /*
  * Runs argv[0] as a program from /PROGRAMS (or by path when it contains a

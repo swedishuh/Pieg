@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PIEG_API_VERSION    7
+#define PIEG_API_VERSION    9
 #define PIEG_ATTR_DIRECTORY 0x10
 
 /* Buffer sizes for kbd_info(). */
@@ -168,6 +168,35 @@ typedef struct pieg_api {
      */
     int (*kbd_load)(const char *path);
     int (*kbd_info)(char *code, char *name);
+
+    /*
+     * Added in API version 8: graphics. gfx_begin() takes the screen from the
+     * console (returns 0 and the size, or -1 when there is no framebuffer);
+     * gfx_end() returns it and repaints the console. Colors are 0xRRGGBB.
+     * Nothing shows until gfx_present(). gfx_text() uses the 5x7 font at an
+     * integer scale (6*scale pixels per character). gfx_ms() is a millisecond
+     * clock that wraps at 2^32; call it at least every 50 ms.
+     *
+     * getchar() also returns 0x82 (Up), 0x83 (Down) and 0x1B (Esc) now.
+     */
+    int (*gfx_begin)(uint32_t *width, uint32_t *height);
+    void (*gfx_end)(void);
+    void (*gfx_rect)(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                     uint32_t rgb);
+    void (*gfx_text)(uint32_t x, uint32_t y, const char *text, uint32_t rgb,
+                     uint32_t scale);
+    void (*gfx_present)(void);
+    uint32_t (*gfx_ms)(void);
+
+    /*
+     * Added in API version 9: pointer. mouse_state() returns 0 when there is
+     * no mouse or touchpad, otherwise a mask of the sources found (1 = PS/2,
+     * 2 = USB). x, y are screen pixels (the same as gfx_begin() reports),
+     * buttons has bit 0 = left, 1 = right, 2 = middle. Any pointer may be
+     * NULL. The kernel draws the cursor; programs only read the state, so
+     * call it (or getchar()) regularly.
+     */
+    int (*mouse_state)(int *x, int *y, int *buttons);
 } pieg_api_t;
 
 #endif

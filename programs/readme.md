@@ -95,6 +95,16 @@ System:
 - `kbd_load(path)`, `kbd_info(code, name)`: load a keyboard layout file and
   read the active layout's names (see `Keyboard/README.md`).
 - `shell_version`: the shell version string.
+- Graphics (API 8): `gfx_begin(&w, &h)` takes the screen from the console
+  (-1 without a framebuffer), `gfx_end()` returns it. `gfx_rect(x, y, w, h,
+  rgb)`, `gfx_text(x, y, text, rgb, scale)` (5x7 font), `gfx_present()` shows
+  the frame, `gfx_ms()` is a millisecond clock (call it at least every 50 ms).
+  `getchar()` also returns 0x82 Up, 0x83 Down, 0x1B Esc. See `setup.c`.
+- Pointer (API 9): `mouse_state(&x, &y, &buttons)` returns 0 when there is no
+  mouse or touchpad, else a mask of what was found (1 = PS/2, 2 = USB). x, y
+  are screen pixels (the size `gfx_begin` reports); buttons: bit 0 left,
+  1 right, 2 middle. Any pointer may be NULL. The kernel draws the cursor.
+  Call it (or `getchar()`) often; see `setup.c` and `mouse.c`.
 - `panic(reason, details)`, `reboot()`, `halt()`: never return.
 
 ## Example: read a file

@@ -5,11 +5,14 @@
 #include "fsinit.h"
 #include "kbdlayout.h"
 
+#include "mouse.h"
+
 extern void framebuffer_flush(void);
 extern void vga_write(const char *text);
 
 #define KEYBOARD_DATA_PORT   0x60
 #define KEYBOARD_STATUS_PORT 0x64
+#define STATUS_AUX_DATA      0x20   /* output buffer holds mouse data */
 
 static int shift_pressed;
 static int ctrl_pressed;
@@ -18,6 +21,9 @@ static int extended_scancode;
 
 #define KEY_SCROLL_UP   ((char)0x80)
 #define KEY_SCROLL_DOWN ((char)0x81)
+#define KEY_UP          ((char)0x82)    /* plain arrows, for programs */
+#define KEY_DOWN        ((char)0x83)
+#define KEY_ESC         ((char)0x1B)
 
 /* The active layout: the built-in US one until a layout file is loaded. */
 static kbd_layout_t loaded;
@@ -41,13 +47,23 @@ void keyboard_init(void)
 
 char keyboard_getchar(void)
 {
-    /* Idle: put everything drawn so far on screen (cheap if nothing is dirty). */
-    if (!(inb(KEYBOARD_STATUS_PORT) & 1)) {
+    uint8_t status = inb(KEYBOARD_STATUS_PORT);
+
+    /* Idle: USB mouse, then put everything drawn so far on screen (cheap if
+     * nothing is dirty; this is also what moves the mouse cursor). */
+    if (!(status & 1)) {
+        mouse_poll();
         framebuffer_flush();
         return 0;
     }
 
     uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+
+    /* The same port carries PS/2 mouse and touchpad bytes. */
+    if (status & STATUS_AUX_DATA) {
+        mouse_ps2_byte(scancode);
+        return 0;
+    }
 
     /* Set-1 extended-key prefix. */
     if (scancode == 0xE0) {
@@ -86,6 +102,13 @@ char keyboard_getchar(void)
                 return KEY_SCROLL_DOWN;
         }
 
+        if (!(scancode & 0x80)) {
+            if (scancode == 0x48)
+                return KEY_UP;
+            if (scancode == 0x50)
+                return KEY_DOWN;
+        }
+
         /* Ignore other extended keys. */
         return 0;
     }
@@ -115,6 +138,9 @@ char keyboard_getchar(void)
 
     if (scancode >= 128)
         return 0;
+
+    if (scancode == 0x01 && !ctrl_pressed)
+        return KEY_ESC;
 
     /* Ctrl+letter produces the control code (Ctrl+C = 3, Ctrl+U = 21, ...). */
     if (ctrl_pressed) {

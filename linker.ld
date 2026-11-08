@@ -29,14 +29,22 @@ SECTIONS
         *(.data .data.*)
     }
 
+    /* End of what is actually loaded from the ELF file. The 2 MiB alignment
+       of .userbss below leaves a hole after this point that holds nothing;
+       the RAM accounting in kernel.c skips it instead of calling it "used". */
+    _loaded_end = .;
+
     /* Ring-3 region: its own 2 MiB page, made user-accessible by arch_init(). */
     .userbss ALIGN(2M) (NOLOAD) :
     {
+        _userbss_start = .;
         *(.bss.userregion)
+        _userbss_end = .;
     }
 
     .bss ALIGN(4K) (NOLOAD) :
     {
+        _bss_start = .;
         *(COMMON)
         *(.bss .bss.*)
     }

@@ -124,6 +124,18 @@ static bool label_is_pieg(const char *label)
 }
 
 /* Mounts `dev` into `fs`; *pieg is true for a PIEG system volume. */
+static bool is_ramdisk(const blockdev_t *dev)
+{
+    return dev->name[0] == 'r' && dev->name[1] == 'd';
+}
+
+/*
+ * Mounts `dev` into `fs`; *pieg is true only for a volume that can run PIEG:
+ * the boot-module RAM disk (GRUB loaded it from our own medium), or any other
+ * volume that has the OS folders (/PROGRAMS). A volume that merely carries the
+ * PIEG label, or is somebody else's (an EFI System Partition, say), does not
+ * count, so the system falls back to the RAM disk instead of mounting it.
+ */
 static bool probe(blockdev_t *dev, fat_fs_t *fs, bool *pieg)
 {
     fat_dirent_t entry;
@@ -131,8 +143,9 @@ static bool probe(blockdev_t *dev, fat_fs_t *fs, bool *pieg)
     if (!fat_mount(fs, dev))
         return false;
 
-    *pieg = label_is_pieg(fs->label) ||
-            fat_lookup(fs, PIEG_DIR_SYSTEM, &entry) == FAT_OK;
+    *pieg = is_ramdisk(dev) ||
+            (fat_lookup(fs, PIEG_DIR_PROGRAMS, &entry) == FAT_OK &&
+             (entry.attr & FAT_ATTR_DIRECTORY) != 0);
 
     return true;
 }
@@ -224,7 +237,12 @@ void fsinit(uint32_t magic, uint32_t mbi)
 
     vga_write("\n[FS] Storage initialization\n");
 
-    ramdisk_init(magic, mbi);
+    unsigned int boot_disks = ramdisk_init(magic, mbi);
+
+    if (boot_disks == 0) {
+        vga_write("[FS] No boot RAM disk: the bootloader did not hand over\n");
+        vga_write("[FS] pieg-fs.img (check the module2 line in grub.cfg).\n");
+    }
 
     if (ata_sector_count() != 0) {
         ata_device.name = "hd0";
@@ -265,7 +283,12 @@ void fsinit(uint32_t magic, uint32_t mbi)
         vga_write(type_name(scratch.type));
         vga_write(" label=");
         vga_write(scratch.label[0] ? scratch.label : "(none)");
-        vga_write(pieg ? " [PIEG volume]\n" : "\n");
+        if (pieg)
+            vga_write(" [PIEG volume]\n");
+        else if (label_is_pieg(scratch.label))
+            vga_write(" (PIEG label but no /PROGRAMS, skipped)\n");
+        else
+            vga_write("\n");
 
         if (pieg && !pieg_dev)
             pieg_dev = dev;
@@ -290,8 +313,19 @@ void fsinit(uint32_t magic, uint32_t mbi)
     filesystem_mounted = true;
     pieg_volume = pieg_dev != 0;
 
-    if (pieg_volume)
+    if (pieg_volume) {
         ensure_layout();
+    } else {
+        /*
+         * Nothing of ours was found, so this is somebody else's volume (very
+         * possibly the EFI System Partition of an internal drive). Never
+         * write to it by accident.
+         */
+        root_fs.writable = false;
+        vga_write("[FS] No PIEG volume found; ");
+        vga_write(chosen->name);
+        vga_write(" is a foreign volume, mounted read-only.\n");
+    }
 
     vga_write("[FS] Mounted ");
     vga_write(chosen->name);

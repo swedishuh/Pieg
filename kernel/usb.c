@@ -72,6 +72,17 @@ static uint8_t bounce[BOUNCE_SECTORS * 512u] __attribute__((aligned(4096)));
 static usbdev_t devs[USB_MAX_DISKS];
 static unsigned int dev_total;
 
+/* One HID boot-protocol mouse (interrupt IN, polled through the async list). */
+static struct {
+    bool present;
+    uint8_t addr, ep;
+    uint16_t mps;
+    uint8_t tog;
+    uint8_t errors;
+} hid;
+static uint8_t hid_buf[64] __attribute__((aligned(64)));
+static unsigned int next_addr = 1;
+
 /* ================================================================
  * Helpers
  * ================================================================ */
@@ -424,6 +435,26 @@ static void add_storage(usbdev_t *d)
     dev_total++;
 }
 
+static void add_hid_mouse(uint8_t addr, uint8_t cfg, uint8_t iface,
+                          uint8_t ep, uint16_t mps)
+{
+    if (control(addr, 0x00, 9, cfg, 0, 0) != 0)
+        return;
+
+    /* Class requests, both optional: boot protocol, report only on change. */
+    control(addr, 0x21, 0x0B, 0, iface, 0);
+    control(addr, 0x21, 0x0A, 0, iface, 0);
+
+    hid.addr = addr;
+    hid.ep = ep;
+    hid.mps = mps;
+    hid.tog = 0;
+    hid.errors = 0;
+    hid.present = true;
+
+    vga_write("[USB] HID boot mouse\n");
+}
+
 static void enumerate(uint8_t addr)
 {
     usbdev_t *d = &devs[dev_total];
@@ -449,6 +480,9 @@ static void enumerate(uint8_t addr)
         return;
 
     bool match = false, found = false;
+    bool hid_match = false, hid_found = false;
+    uint8_t h_iface = 0, h_ep = 0;
+    uint16_t h_mps = 0;
 
     for (unsigned int o = 0; o + 2 <= total && ctrl_buf[o];
          o += ctrl_buf[o]) {
@@ -458,6 +492,11 @@ static void enumerate(uint8_t addr)
             match = !found && p[5] == 8 && p[6] == 6 && p[7] == 0x50;
             if (match)
                 d->iface = p[2];
+
+            /* HID, boot interface subclass, mouse protocol. */
+            hid_match = !hid_found && p[5] == 3 && p[6] == 1 && p[7] == 2;
+            if (hid_match)
+                h_iface = p[2];
         } else if (p[1] == 5 && match && o + 7 <= total && (p[3] & 3) == 2) {
             if (p[2] & 0x80)
                 d->in_ep = p[2] & 0xF;
@@ -466,7 +505,18 @@ static void enumerate(uint8_t addr)
             d->mps = (uint16_t)((p[4] | (p[5] << 8)) & 0x7FF);
             if (d->in_ep && d->out_ep)
                 found = true;
+        } else if (p[1] == 5 && hid_match && o + 7 <= total &&
+                   (p[3] & 3) == 3 && (p[2] & 0x80)) {
+            h_ep = p[2] & 0xF;
+            h_mps = (uint16_t)((p[4] | (p[5] << 8)) & 0x7FF);
+            hid_found = h_ep && h_mps;
+            hid_match = false;
         }
+    }
+
+    if (!found && hid_found && !hid.present && h_mps <= sizeof(hid_buf)) {
+        add_hid_mouse(addr, cfg, h_iface, h_ep, h_mps);
+        return;
     }
 
     if (!found || !d->mps)
@@ -511,8 +561,8 @@ static void init_port(unsigned int n)
         return;
     }
 
-    if (dev_total < USB_MAX_DISKS)
-        enumerate((uint8_t)(dev_total + 1));
+    if (dev_total < USB_MAX_DISKS && next_addr < 100)
+        enumerate((uint8_t)next_addr++);
 }
 
 static void init_controller(const pci_device_t *pd)
@@ -612,6 +662,8 @@ static void init_controller(const pci_device_t *pd)
 unsigned int usb_init(void)
 {
     dev_total = 0;
+    next_addr = 1;
+    hid.present = false;
 
     vga_write("\n[USB] Looking for EHCI (USB 2.0) controllers...\n");
 
@@ -624,7 +676,8 @@ unsigned int usb_init(void)
     }
 
     if (dev_total == 0)
-        vga_write("[USB] No USB storage device found.\n");
+        vga_write(hid.present ? "[USB] No USB storage device found (mouse only).\n"
+                              : "[USB] No USB storage device found.\n");
 
     return dev_total;
 }
@@ -637,4 +690,55 @@ unsigned int usb_disk_count(void)
 blockdev_t *usb_disk_get(unsigned int index)
 {
     return index < dev_total ? &devs[index].dev : 0;
+}
+
+int usb_mouse_present(void)
+{
+    return hid.present;
+}
+
+/*
+ * One poll of the mouse's interrupt endpoint, about a millisecond long. The
+ * HC retries NAKs by itself, so a quiet mouse just times out. Returns 1 and
+ * fills report/len when the mouse sent a report.
+ */
+int usb_mouse_poll(uint8_t *report, unsigned int *len)
+{
+    if (!hid.present || !op)
+        return 0;
+
+    qtd_init(&qtd[0], 1, hid.tog, hid_buf, hid.mps);
+    xfer(hid.addr, hid.ep, hid.mps, 1, 1);
+
+    /*
+     * xfer() has stopped the schedule by now. If the transfer finished in the
+     * last instant before that, the status byte is clean: take the report so
+     * the data toggle stays in step with the device.
+     */
+    uint32_t tok = *(volatile uint32_t *)&qtd[0].token;
+
+    if (tok & 0x40u) {
+        if (++hid.errors > 20)
+            hid.present = false;    /* unplugged or broken: stop polling it */
+        return 0;
+    }
+
+    hid.errors = 0;
+
+    if (tok & 0xFFu)
+        return 0;                   /* still active: nothing to report */
+
+    uint32_t left = (tok >> 16) & 0x7FFFu;
+    uint32_t got = left <= hid.mps ? hid.mps - left : 0;
+
+    hid.tog ^= 1;
+
+    if (!got)
+        return 0;
+
+    for (uint32_t i = 0; i < got && i < 64; i++)
+        report[i] = hid_buf[i];
+
+    *len = got;
+    return 1;
 }

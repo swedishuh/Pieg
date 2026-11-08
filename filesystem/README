@@ -5,7 +5,17 @@ If you want to use beeps program remember it's not very usable yet, though some 
 Here is an example: 2    4    2    4    1    3    1    5, try running it in beeps.
 
 Keyboard layouts
+On first boot the setup program picks the keyboard layout (run setup to
+open it again).
 If your keys type the wrong characters, run keymap to see the layouts in
 /INPUTDEV/KEYBOARD and keymap de (or fr, se, uk, dvorak, colemak, us) to
 switch. The choice is kept for the next boot. keymap --test lets you type to
 check it. AltGr is the right Alt key.
+
+Mouse and touchpad
+PS/2 mice and touchpads (laptop touchpads answer as a standard PS/2 mouse) and
+USB 2.0 high-speed mice are supported. The pointer is a green ball with an X
+and appears when you first move it. Run mouse to check that one was found and
+to see its position and buttons. Touchpads that only speak I2C or xHCI/USB 3
+are not supported yet, and low-speed USB mice need a companion controller
+driver, which does not exist yet.

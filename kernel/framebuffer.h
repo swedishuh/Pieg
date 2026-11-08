@@ -58,4 +58,12 @@ void framebuffer_copy_rows(uint32_t dst_y, uint32_t src_y, uint32_t rows);
  */
 void framebuffer_flush(void);
 
+/*
+ * Mouse cursor: a green ball with an X and a soft shadow, centered on (x, y).
+ * It is composed onto the screen by framebuffer_flush() from the RAM copy, so
+ * nothing ever has to be erased and it never ends up in the shadow buffer.
+ * Does nothing when drawing goes straight to video memory.
+ */
+void framebuffer_cursor_set(int x, int y, bool visible);
+
 #endif

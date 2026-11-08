@@ -6,7 +6,9 @@
 #include "blockdev.h"
 #include "fat.h"
 #include "fsinit.h"
+#include "gfx.h"
 #include "mem.h"
+#include "mouse.h"
 #include "panic.h"
 #include "pci.h"
 #include "persist.h"
@@ -383,6 +385,13 @@ static const pieg_api_t api = {
     .disk_part_info = api_disk_part_info,
     .kbd_load = keyboard_layout_load,
     .kbd_info = keyboard_layout_info,
+    .gfx_begin = gfx_begin,
+    .gfx_end = gfx_end,
+    .gfx_rect = gfx_rect,
+    .gfx_text = gfx_text,
+    .gfx_present = gfx_present,
+    .gfx_ms = gfx_ms,
+    .mouse_state = mouse_state,
 };
 
 /* ================================================================

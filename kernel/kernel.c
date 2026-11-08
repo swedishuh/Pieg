@@ -17,6 +17,7 @@ extern void vga_write(const char *text);
 extern void driverinit(void);
 extern void fsinit(uint32_t magic, uint32_t mbi);
 extern void keyboard_load_saved(void);
+extern void mouse_init(void);
 extern void arch_init(void);
 extern void login_run(void);
 
@@ -100,6 +101,10 @@ struct __attribute__((packed)) multiboot2_module_tag {
     uint32_t mod_end;
 };
 
+/* Section boundaries from linker.ld. */
+extern char _loaded_end[];
+extern char _userbss_start[], _userbss_end[];
+extern char _bss_start[];
 extern char _end[];
 
 static uint64_t page_up(uint64_t v)
@@ -131,8 +136,17 @@ static bool compute_ram_used(const struct multiboot2_info *info,
     const uint8_t *base = (const uint8_t *)info;
     uint64_t shadow_start, shadow_length;
 
+    /*
+     * The kernel image is three separate pieces. The hole between the end of
+     * .data and the 2 MiB-aligned user region is padding that holds nothing,
+     * so it is not counted (the old "1 MiB .. _end" range charged it as used).
+     */
     if (!add_used(r, &n, 0, 0x100000u) ||
-        !add_used(r, &n, 0x100000u, page_up((uint64_t)(uintptr_t)_end)) ||
+        !add_used(r, &n, 0x100000u, page_up((uint64_t)(uintptr_t)_loaded_end)) ||
+        !add_used(r, &n, (uint64_t)(uintptr_t)_userbss_start,
+                  page_up((uint64_t)(uintptr_t)_userbss_end)) ||
+        !add_used(r, &n, (uint64_t)(uintptr_t)_bss_start,
+                  page_up((uint64_t)(uintptr_t)_end)) ||
         !add_used(r, &n, (uint64_t)(uintptr_t)info,
                   page_up((uint64_t)(uintptr_t)info + total_size)))
         return false;
@@ -407,6 +421,7 @@ void kernel_main(uint32_t magic, uint32_t mbi_address)
     driverinit();
     fsinit(magic, mbi_address);
     keyboard_load_saved();
+    mouse_init();
 
     login_run();
 

@@ -1,23 +1,46 @@
+
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
 CC := gcc
 ASM := nasm
 
 BUILD := build
 ISO_DIR := iso
+
 GRUB_EFI_DIR := /usr/lib/grub/x86_64-efi
 GRUB_BIOS_DIR := /usr/lib/grub/i386-pc
 
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
+
+# --------------------------------------------------
+# COMPILER FLAGS
+# --------------------------------------------------
+
 CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -m64 -mno-red-zone -Wall -Wextra -O2 -Ikernel
+
 LDFLAGS := -T linker.ld -nostdlib -no-pie -Wl,--build-id=none -Wl,-z,max-page-size=0x1000
 
-C_SOURCES := \
+PROG_CFLAGS := -std=gnu11 -ffreestanding -fPIE -fno-stack-protector -mno-red-zone -fno-asynchronous-unwind-tables -fno-plt -fvisibility=hidden -ffunction-sections -fdata-sections -m64 -Wall -Wextra -O2 -Ikernel -Iprograms
+
+PROG_LDFLAGS := -nostdlib -pie -Wl,--no-dynamic-linker -Wl,-e,pieg_start -Wl,-z,norelro -Wl,-z,noseparate-code -Wl,-z,max-page-size=0x1000 -Wl,--build-id=none -Wl,--gc-sections
+
+# --------------------------------------------------
+# KERNEL SOURCES
+# --------------------------------------------------
+
+KERNEL_C := \
 	kernel/kernel.c \
 	kernel/vga.c \
+	kernel/gfx.c \
 	kernel/framebuffer.c \
 	kernel/driverinit.c \
 	kernel/fsinit.c \
 	kernel/scheduler.c \
 	kernel/terminal.c \
 	kernel/keyboard.c \
+	kernel/mouse.c \
+	kernel/mousecore.c \
 	kernel/kbdlayout.c \
 	kernel/sound.c \
 	kernel/blockdev.c \
@@ -39,46 +62,86 @@ C_SOURCES := \
 	kernel/usermode.c \
 	kernel/login.c
 
-ASM_SOURCES := kernel/entry.asm kernel/trap.asm
+KERNEL_ASM := \
+	kernel/entry.asm \
+	kernel/trap.asm
 
-OBJECTS := $(patsubst kernel/%.c,$(BUILD)/%.o,$(C_SOURCES)) \
-           $(patsubst kernel/%.asm,$(BUILD)/%.o,$(ASM_SOURCES))
+KERNEL_OBJ := \
+	$(patsubst kernel/%.c,$(BUILD)/%.o,$(KERNEL_C)) \
+	$(patsubst kernel/%.asm,$(BUILD)/%.o,$(KERNEL_ASM))
 
-# ---- Programs ----
+# --------------------------------------------------
+# PROGRAMS
+# --------------------------------------------------
 
-PROG_DIR := $(BUILD)/programs
-PROG_LIB := programs/libpieg.c
+CORE_NAMES := \
+	ls dir cat type mkdir touch rm rmdir del \
+	write append cp copy mv move mount df echo pwd \
+	clear cls whoami about ver version uname hostname \
+	sysinfo fetch ram free hex panic reboot halt shutdown
 
-PROG_CFLAGS := -std=gnu11 -ffreestanding -fPIE -fno-stack-protector -mno-red-zone -fno-asynchronous-unwind-tables -fno-plt -fvisibility=hidden -ffunction-sections -fdata-sections -m64 -Wall -Wextra -O2 -Ikernel -Iprograms
+APP_NAMES := $(filter-out libpieg,$(basename $(notdir $(wildcard programs/*.c))))
 
-PROG_LDFLAGS := -nostdlib -pie -Wl,--no-dynamic-linker -Wl,-e,pieg_start -Wl,-z,norelro -Wl,-z,noseparate-code -Wl,-z,max-page-size=0x1000 -Wl,--build-id=none -Wl,--gc-sections
+PROGRAM_ELFS := $(addprefix $(BUILD)/programs/,$(addsuffix .elf,$(APP_NAMES)))
 
-APP_NAMES := $(filter-out core libpieg,$(patsubst programs/%.c,%,$(wildcard programs/*.c)))
-
-CORE_NAMES := ls dir cat type mkdir touch rm rmdir del write append cp copy mv move mount df echo pwd clear cls whoami about ver version uname hostname sysinfo fetch ram free hex panic reboot halt shutdown
-
-PROGRAM_ELFS := $(PROG_DIR)/core.elf $(addprefix $(PROG_DIR)/,$(addsuffix .elf,$(APP_NAMES)))
-
-# ---- Filesystem contents ----
-
-FS_README := filesystem/README
-FS_HELLO := filesystem/hello.ys
-FS_IYS_GUIDE := filesystem/YSGUIDE
-
-# Keyboard layouts: Keyboard/*.kbd -> /INPUTDEV/KEYBOARD/*.KBD
-KBD_DIR := Keyboard
-KBD_LAYOUTS := $(wildcard $(KBD_DIR)/*.kbd)
+# --------------------------------------------------
+# FILESYSTEM CONFIGURATION
+# --------------------------------------------------
 
 FS_IMG := $(BUILD)/pieg-fs.img
 DISK_IMG := $(BUILD)/pieg-disk.img
+PART_IMG := $(BUILD)/pieg-partition.img
+
+# The FS image is loaded into RAM whole by GRUB (boot module), so every MB here
+# is a MB of RAM gone. Left empty it is sized from the content: files + 4 MB of
+# headroom, at least 4 MB. Set FS_SIZE_MB=N to force a size.
+FS_SIZE_MB ?=
+FS_MIN_MB := 4
+FS_HEADROOM_MB := 4
+FS_MAX_MB := 32
+DISK_SIZE_MB := 256
+
 DISK_PART_OFFSET := 1048576
+DISK_PART_SECTORS := 522240
 
-.PHONY: host-test run-uefi run-usb all clean iso iso-uefi iso-legacy run run-live disk disk-reset fsimg check-tools programs install-programs
+IMAGE_DIR := Images
 
-all: $(BUILD)/pieg.elf
+KEYBOARD_FILES := \
+	Keyboard/colemak.kbd \
+	Keyboard/de.kbd \
+	Keyboard/dvorak.kbd \
+	Keyboard/fr.kbd \
+	Keyboard/se.kbd \
+	Keyboard/uk.kbd \
+	Keyboard/us.kbd
+
+IMAGE_FILES := $(shell find $(IMAGE_DIR) -type f 2>/dev/null)
+IMAGE_DIRS := $(shell find $(IMAGE_DIR) -type d 2>/dev/null)
+
+# --------------------------------------------------
+# TARGETS
+# --------------------------------------------------
+
+.PHONY: all clean run iso iso-legacy iso-uefi \
+	disk-image fs-image install-programs \
+	copy-programs copy-keyboard copy-images \
+	check-tools microuefi microlegacy
+
+all: $(BUILD)/pieg.elf fs-image disk-image iso-legacy
+
+# --------------------------------------------------
+# BUILD DIRECTORIES
+# --------------------------------------------------
 
 $(BUILD):
 	mkdir -p $(BUILD)
+
+$(BUILD)/programs:
+	mkdir -p $(BUILD)/programs
+
+# --------------------------------------------------
+# KERNEL COMPILATION
+# --------------------------------------------------
 
 $(BUILD)/%.o: kernel/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -86,185 +149,270 @@ $(BUILD)/%.o: kernel/%.c | $(BUILD)
 $(BUILD)/%.o: kernel/%.asm | $(BUILD)
 	$(ASM) -f elf64 $< -o $@
 
-$(BUILD)/pieg.elf: $(OBJECTS) linker.ld
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJECTS) -lgcc
+$(BUILD)/pieg.elf: $(KERNEL_OBJ) linker.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(KERNEL_OBJ) -lgcc
 
-# ---- Program compilation ----
+# --------------------------------------------------
+# PROGRAM COMPILATION
+# --------------------------------------------------
 
-programs: $(PROGRAM_ELFS)
+$(BUILD)/programs/%.elf: programs/%.c programs/libpieg.c programs/libpieg.h | $(BUILD)/programs
+	$(CC) $(PROG_CFLAGS) $(PROG_LDFLAGS) $< programs/libpieg.c -o $@
 
-$(PROG_DIR):
-	mkdir -p $(PROG_DIR)
+# --------------------------------------------------
+# COMMON FILESYSTEM DIRECTORIES
+# --------------------------------------------------
 
-$(PROG_DIR)/%.elf: programs/%.c $(PROG_LIB) programs/libpieg.h kernel/api.h | $(PROG_DIR)
-	$(CC) $(PROG_CFLAGS) $(PROG_LDFLAGS) $< $(PROG_LIB) -o $@
-
-# Copies every program into /PROGRAMS of the FAT image.
-define INSTALL_PROGRAMS
-	for n in $(CORE_NAMES); do \
-		mcopy -o -i $(1) $(PROG_DIR)/core.elf ::/PROGRAMS/$$(echo $$n | tr a-z A-Z).ELF || exit 1; \
-	done
-	for n in $(APP_NAMES); do \
-		mcopy -o -i $(1) $(PROG_DIR)/$$n.elf ::/PROGRAMS/$$(echo $$n | tr a-z A-Z).ELF || exit 1; \
-	done
+define CREATE_DIRECTORIES
+	mmd -i "$(1)" '::/#' ::/PROGRAMS ::/U ::/U/HOME ::/U/HOME/EXAMPLE
+	mmd -i "$(1)" ::/INPUTDEV ::/INPUTDEV/KEYBOARD ::/INPUTDEV/MOUSE ::/INPUTDEV/CUSTOM
 endef
 
-# Creates /INPUTDEV (KEYBOARD, MOUSE, CUSTOM) and copies the layouts into it.
-# Safe to repeat on an existing image: directories that exist are left alone.
-define INSTALL_KEYBOARD
-	for d in INPUTDEV INPUTDEV/KEYBOARD INPUTDEV/MOUSE INPUTDEV/CUSTOM; do \
-		mdir -i $(1) ::/$$d </dev/null >/dev/null 2>&1 || \
-			mmd -i $(1) ::/$$d </dev/null || exit 1; \
-	done
-	for f in $(KBD_LAYOUTS); do \
-		mcopy -o -i $(1) $$f ::/INPUTDEV/KEYBOARD/$$(basename $$f | tr a-z A-Z) || exit 1; \
-	done
+# --------------------------------------------------
+# COMMON FILES
+# --------------------------------------------------
+
+define COPY_COMMON_FILES
+	mcopy -i "$(1)" $(BUILD)/pieg.elf '::/#/PIEG.ELF'
+	mcopy -i "$(1)" filesystem/README ::/U/HOME/README.TXT
+	mcopy -i "$(1)" filesystem/hello.ys ::/U/HOME/EXAMPLE/HELLO.YS
+	mcopy -i "$(1)" filesystem/YSGUIDE ::/U/HOME/YSGUIDE.TXT
 endef
 
-# ---- Build requirements ----
+# --------------------------------------------------
+# FILESYSTEM IMAGE
+# --------------------------------------------------
 
-check-tools:
-	@test -f $(GRUB_EFI_DIR)/modinfo.sh || \
-		(echo "Missing GRUB x86_64-efi modules. Install grub-efi-amd64-bin."; exit 1)
-	@test -f $(GRUB_BIOS_DIR)/modinfo.sh || \
-		(echo "Missing GRUB i386-pc modules. Install grub-pc-bin."; exit 1)
-	@command -v grub-mkrescue >/dev/null || \
-		(echo "Missing grub-mkrescue. Install grub-common."; exit 1)
-	@command -v xorriso >/dev/null || \
-		(echo "Missing xorriso."; exit 1)
-	@command -v mkfs.fat >/dev/null || \
-		(echo "Missing mkfs.fat. Install dosfstools."; exit 1)
-	@command -v mmd >/dev/null || \
-		(echo "Missing mtools."; exit 1)
-	@command -v sfdisk >/dev/null || \
-		(echo "Missing sfdisk. Install fdisk."; exit 1)
+fs-image: $(FS_IMG)
 
-# ---- Live filesystem image ----
+$(FS_IMG): $(BUILD)/pieg.elf $(PROGRAM_ELFS) \
+	filesystem/README filesystem/hello.ys filesystem/YSGUIDE \
+	$(KEYBOARD_FILES) $(IMAGE_FILES) $(IMAGE_DIRS)
 
-fsimg: $(FS_IMG)
-
-$(FS_IMG): $(BUILD)/pieg.elf $(PROGRAM_ELFS) $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) $(KBD_LAYOUTS) check-tools | $(BUILD)
+	@echo "[FS] Creating filesystem..."
 	rm -f $@
-	dd if=/dev/zero of=$@ bs=1M count=16 status=none
-	mkfs.fat -F 16 -n PIEG $@ >/dev/null
+	mb="$(FS_SIZE_MB)"; \
+	if [ -z "$$mb" ]; then \
+		bytes=$$(du -sbc filesystem Keyboard $(IMAGE_DIR) $(PROGRAM_ELFS) 2>/dev/null | tail -n 1 | cut -f1 || true); \
+		mb=$$(( bytes / 1048576 + $(FS_HEADROOM_MB) )); \
+		if [ $$mb -lt $(FS_MIN_MB) ]; then mb=$(FS_MIN_MB); fi; \
+	fi; \
+	if [ $$mb -gt $(FS_MAX_MB) ]; then \
+		echo "[FS] needs $$mb MB, over the $(FS_MAX_MB) MB RAM budget (set FS_MAX_MB to allow)"; exit 1; \
+	fi; \
+	echo "[FS] RAM disk size: $$mb MB"; \
+	dd if=/dev/zero of=$@ bs=1M count=$$mb status=none; \
+	spc=""; \
+	if [ $$mb -le 24 ]; then spc="-s 1"; fi; \
+	mkfs.fat -F 16 $$spc -n PIEG $@ >/dev/null
 
-	mmd -i $@ '::/#' ::/PROGRAMS ::/U ::/U/HOME ::/U/HOME/EXAMPLE
+	$(call CREATE_DIRECTORIES,$@)
+	$(call COPY_COMMON_FILES,$@)
 
-	mcopy -i $@ $(BUILD)/pieg.elf '::/#/PIEG.ELF'
-	mcopy -i $@ $(FS_README) ::/U/HOME/README.TXT
-	mcopy -i $@ $(FS_HELLO) ::/U/HOME/EXAMPLE/HELLO.YS
-	mcopy -i $@ $(FS_IYS_GUIDE) ::/U/HOME/YSGUIDE.TXT
+	@$(MAKE) copy-programs IMAGE="$@"
+	@$(MAKE) copy-keyboard IMAGE="$@"
+	@$(MAKE) copy-images IMAGE="$@"
 
-	$(call INSTALL_PROGRAMS,$@)
-	$(call INSTALL_KEYBOARD,$@)
+	@echo "[FS] Filesystem complete."
 
-# ---- ISO images ----
+# --------------------------------------------------
+# PERSISTENT DISK IMAGE
+# --------------------------------------------------
 
-iso: iso-uefi iso-legacy
+disk-image: $(BUILD)/pieg.elf $(PROGRAM_ELFS) \
+	$(KEYBOARD_FILES) $(IMAGE_FILES) $(IMAGE_DIRS)
 
-iso-uefi: $(BUILD)/pieg.elf $(FS_IMG) check-tools
-	mkdir -p $(ISO_DIR)/boot/grub
-	cp $(BUILD)/pieg.elf $(ISO_DIR)/boot/pieg.elf
-	cp $(FS_IMG) $(ISO_DIR)/boot/pieg-fs.img
-	grub-mkrescue --directory=$(GRUB_EFI_DIR) -o $(BUILD)/pieg-uefi.iso $(ISO_DIR)
+	@echo "[DISK] Creating disk image..."
 
-iso-legacy: $(BUILD)/pieg.elf $(FS_IMG) check-tools
+	rm -f $(DISK_IMG) $(PART_IMG)
+
+	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=$(DISK_SIZE_MB) status=none
+
+	@echo "[DISK] Creating partition table..."
+
+	printf 'label: dos\nstart=2048, size=$(DISK_PART_SECTORS), type=e\n' | sfdisk -q $(DISK_IMG)
+
+	@echo "[DISK] Creating partition filesystem..."
+
+	dd if=/dev/zero of=$(PART_IMG) bs=512 count=$(DISK_PART_SECTORS) status=none
+	mkfs.fat -F 16 -n PIEG $(PART_IMG) >/dev/null
+
+	dd if=$(PART_IMG) of=$(DISK_IMG) bs=512 seek=2048 conv=notrunc status=none
+
+	rm -f $(PART_IMG)
+
+	@echo "[DISK] Creating directories..."
+
+	$(call CREATE_DIRECTORIES,$(DISK_IMG)@@$(DISK_PART_OFFSET))
+	$(call COPY_COMMON_FILES,$(DISK_IMG)@@$(DISK_PART_OFFSET))
+
+	@$(MAKE) copy-programs IMAGE="$(DISK_IMG)@@$(DISK_PART_OFFSET)"
+	@$(MAKE) copy-keyboard IMAGE="$(DISK_IMG)@@$(DISK_PART_OFFSET)"
+	@$(MAKE) copy-images IMAGE="$(DISK_IMG)@@$(DISK_PART_OFFSET)"
+
+	@echo "[DISK] Disk image complete."
+
+# --------------------------------------------------
+# PROGRAM INSTALLATION
+# --------------------------------------------------
+
+copy-programs:
+	@echo "[PROGRAMS] Installing core commands..."
+
+	@for n in $(CORE_NAMES); do \
+		echo "[PROGRAMS] Installing $$n"; \
+		mcopy -o -i "$(IMAGE)" "$(BUILD)/programs/core.elf" "::/PROGRAMS/$$(echo $$n | tr a-z A-Z).ELF" || exit 1; \
+	done
+
+	@for n in $(APP_NAMES); do \
+		[ "$$n" = "core" ] && continue; \
+		echo "[PROGRAMS] Installing $$n"; \
+		mcopy -o -i "$(IMAGE)" "$(BUILD)/programs/$$n.elf" "::/PROGRAMS/$$(echo $$n | tr a-z A-Z).ELF" || exit 1; \
+	done
+
+# --------------------------------------------------
+# KEYBOARD LAYOUTS
+# --------------------------------------------------
+
+copy-keyboard:
+	@echo "[KEYBOARD] Installing layouts..."
+
+	@for f in $(KEYBOARD_FILES); do \
+		echo "[KEYBOARD] Copying $$f"; \
+		mcopy -o -i "$(IMAGE)" "$$f" "::/INPUTDEV/KEYBOARD/$$(basename "$$f" | tr a-z A-Z)" || exit 1; \
+	done
+
+# --------------------------------------------------
+# IMAGE DIRECTORY
+# --------------------------------------------------
+
+copy-images:
+	@if [ -d "$(IMAGE_DIR)" ]; then \
+		echo "[IMAGES] Preparing Images directory..."; \
+		mmd -i "$(IMAGE)" ::/U/HOME/Images 2>/dev/null || true; \
+		find "$(IMAGE_DIR)" -type d -print0 | while IFS= read -r -d '' d; do \
+			rel=$${d#"$(IMAGE_DIR)"}; \
+			if [ -n "$$rel" ]; then \
+				echo "[IMAGES] Creating directory $$rel"; \
+				mmd -i "$(IMAGE)" "::/U/HOME/Images$$rel" 2>/dev/null || true; \
+			fi; \
+		done; \
+		find "$(IMAGE_DIR)" -type f -print0 | while IFS= read -r -d '' f; do \
+			rel=$${f#"$(IMAGE_DIR)/"}; \
+			echo "[IMAGES] Copying $$rel"; \
+			mcopy -o -i "$(IMAGE)" "$$f" "::/U/HOME/Images/$$rel" || exit 1; \
+		done; \
+		echo "[IMAGES] Copy complete."; \
+	else \
+		echo "[IMAGES] No Images directory found."; \
+	fi
+
+# --------------------------------------------------
+# ISO CREATION
+# --------------------------------------------------
+
+iso: iso-legacy
+
+iso-legacy: $(BUILD)/pieg.elf $(FS_IMG)
 	mkdir -p $(ISO_DIR)/boot/grub
 	cp $(BUILD)/pieg.elf $(ISO_DIR)/boot/pieg.elf
 	cp $(FS_IMG) $(ISO_DIR)/boot/pieg-fs.img
 	grub-mkrescue --directory=$(GRUB_BIOS_DIR) -o $(BUILD)/pieg-legacy.iso $(ISO_DIR)
 
-# ---- Persistent test disk ----
+iso-uefi: $(BUILD)/pieg.elf $(FS_IMG)
+	mkdir -p $(ISO_DIR)/boot/grub
+	cp $(BUILD)/pieg.elf $(ISO_DIR)/boot/pieg.elf
+	cp $(FS_IMG) $(ISO_DIR)/boot/pieg-fs.img
+	grub-mkrescue --directory=$(GRUB_EFI_DIR) -o $(BUILD)/pieg-uefi.iso $(ISO_DIR)
 
-disk: $(DISK_IMG)
+# --------------------------------------------------
+# NORMAL BOOT
+# --------------------------------------------------
 
-$(DISK_IMG): $(BUILD)/pieg.elf $(FS_README) $(FS_HELLO) $(FS_IYS_GUIDE) $(KBD_LAYOUTS) check-tools | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=64 status=none
-	printf 'label: dos\nstart=2048, type=e\n' | sfdisk -q $@
-	mkfs.fat -F 16 -n PIEG --offset 2048 $@ 64512 >/dev/null
+run: disk-image iso-legacy
+	qemu-system-x86_64 \
+		-m 512M \
+		-machine pc \
+		-cpu qemu64 \
+		-smp 2 \
+		-display sdl \
+		-audiodev pa,id=audio0 \
+		-device ich9-intel-hda \
+		-device hda-duplex,audiodev=audio0 \
+		-drive file=$(DISK_IMG),format=raw,if=ide \
+		-cdrom $(BUILD)/pieg-legacy.iso \
+		-boot d
 
-	mmd -i $@@@$(DISK_PART_OFFSET) '::/#' ::/PROGRAMS ::/U ::/U/HOME ::/U/HOME/EXAMPLE
+# --------------------------------------------------
+# MICRO UEFI: 29 MB
+# --------------------------------------------------
 
-	mcopy -i $@@@$(DISK_PART_OFFSET) $(BUILD)/pieg.elf '::/#/PIEG.ELF'
-	mcopy -i $@@@$(DISK_PART_OFFSET) $(FS_README) ::/U/HOME/README.TXT
-	mcopy -i $@@@$(DISK_PART_OFFSET) $(FS_HELLO) ::/U/HOME/EXAMPLE/HELLO.YS
-	mcopy -i $@@@$(DISK_PART_OFFSET) $(FS_IYS_GUIDE) ::/U/HOME/YSGUIDE.TXT
+microuefi: disk-image iso-uefi
+	@test -f "$(OVMF_CODE)" || { echo "[MICROUEFI] OVMF firmware not found: $(OVMF_CODE)"; exit 1; }
 
-	$(call INSTALL_KEYBOARD,$@@@$(DISK_PART_OFFSET))
+	@echo "[MICROUEFI] Starting PIEG with 29 MB RAM..."
 
-# Refreshes programs on the persistent disk.
-install-programs: $(PROGRAM_ELFS) $(DISK_IMG)
-	$(call INSTALL_PROGRAMS,$(DISK_IMG)@@$(DISK_PART_OFFSET))
-	$(call INSTALL_KEYBOARD,$(DISK_IMG)@@$(DISK_PART_OFFSET))
+	qemu-system-x86_64 \
+		-m 29M \
+		-machine q35 \
+		-cpu qemu64 \
+		-smp 1 \
+		-display sdl \
+		-bios "$(OVMF_CODE)" \
+		-drive file=$(DISK_IMG),format=raw,if=ide \
+		-cdrom $(BUILD)/pieg-uefi.iso \
+		-boot d
 
-disk-reset:
-	rm -f $(DISK_IMG)
-	$(MAKE) disk
+# --------------------------------------------------
+# MICRO LEGACY: 29 MB
+# --------------------------------------------------
 
-# ---- Live QEMU ----
+microlegacy: disk-image iso-legacy
+	@echo "[MICROLEGACY] Starting PIEG with 29 MB RAM..."
 
-run-live: iso-legacy
-	qemu-system-x86_64 -m 512M -boot order=d -cdrom $(BUILD)/pieg-legacy.iso -monitor stdio
+	qemu-system-x86_64 \
+		-m 29M \
+		-machine pc \
+		-cpu qemu64 \
+		-smp 1 \
+		-display sdl \
+		-drive file=$(DISK_IMG),format=raw,if=ide \
+		-cdrom $(BUILD)/pieg-legacy.iso \
+		-boot d
 
-run: iso-legacy disk install-programs
-	@printf '\nLaunch PIEG in QEMU? [y/N] ' >&2; \
-	read answer </dev/tty; \
-	case "$$answer" in \
-		y|Y|yes|YES) \
-			qemu-system-x86_64 \
-				-no-reboot \
-				-no-shutdown \
-				-boot order=d \
-				-drive file=$(BUILD)/pieg-disk.img,format=raw,if=ide,index=0 \
-				-cdrom $(BUILD)/pieg-legacy.iso \
-				-monitor stdio ;; \
-		*) echo "Cancelled."; exit 0 ;; \
-	esac
+# --------------------------------------------------
+# INSTALL PROGRAMS INTO EXISTING FS IMAGE
+# --------------------------------------------------
 
-# ---- UEFI + SATA test ----
+install-programs: $(FS_IMG) $(PROGRAM_ELFS)
+	@$(MAKE) copy-programs IMAGE="$(FS_IMG)"
 
-SATA_IMG := $(BUILD)/pieg-sata.img
-OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
-OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS_4M.fd
+# --------------------------------------------------
+# TOOL CHECK
+# --------------------------------------------------
 
-$(SATA_IMG): | $(BUILD)
-	truncate -s 2G $@
+check-tools:
+	@command -v gcc >/dev/null || { echo "Missing gcc"; exit 1; }
+	@command -v nasm >/dev/null || { echo "Missing nasm"; exit 1; }
+	@command -v grub-mkrescue >/dev/null || { echo "Missing grub-mkrescue"; exit 1; }
+	@command -v mcopy >/dev/null || { echo "Missing mcopy"; exit 1; }
+	@command -v mmd >/dev/null || { echo "Missing mmd"; exit 1; }
+	@command -v mkfs.fat >/dev/null || { echo "Missing mkfs.fat"; exit 1; }
+	@command -v sfdisk >/dev/null || { echo "Missing sfdisk"; exit 1; }
+	@command -v qemu-system-x86_64 >/dev/null || { echo "Missing QEMU"; exit 1; }
+	@echo "All required tools found."
 
-run-uefi: iso-uefi $(SATA_IMG)
-	@test -f $(BUILD)/OVMF_VARS.fd || cp $(OVMF_VARS) $(BUILD)/OVMF_VARS.fd
-	qemu-system-x86_64 -machine q35 -m 512M -no-reboot -no-shutdown \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-		-drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd \
-		-drive file=$(SATA_IMG),format=raw,if=ide,index=0 \
-		-cdrom $(BUILD)/pieg-uefi.iso -boot d -monitor stdio
-
-# ---- USB 2.0 (EHCI) test: boots the live ISO from a USB stick ----
-
-run-usb: iso-legacy $(SATA_IMG)
-	qemu-system-x86_64 -m 512M \
-		-device usb-ehci,id=ehci \
-		-drive if=none,id=usbiso,file=$(BUILD)/pieg-legacy.iso,format=raw \
-		-device usb-storage,bus=ehci.0,drive=usbiso,bootindex=0 \
-		-drive if=none,id=usbdata,file=$(SATA_IMG),format=raw \
-		-device usb-storage,bus=ehci.0,drive=usbdata -monitor stdio
-
-# ---- Host-side tests ----
-
-host-test: | $(BUILD)
-	gcc -std=gnu11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Ikernel \
-		tests/hosttest.c kernel/gpt.c kernel/mkfat.c kernel/fat.c \
-		kernel/blockdev.c kernel/partition.c kernel/persist.c -o $(BUILD)/hosttest
-	$(BUILD)/hosttest
-	gcc -std=gnu11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Ikernel \
-		tests/kbdtest.c kernel/kbdlayout.c -o $(BUILD)/kbdtest
-	$(BUILD)/kbdtest $(KBD_DIR)
-
-# ---- Cleanup ----
+# --------------------------------------------------
+# CLEAN
+# --------------------------------------------------
 
 clean:
-	rm -f $(BUILD)/*.o \
-		$(BUILD)/pieg.elf \
-		$(PROG_DIR)/*.elf \
-		$(BUILD)/pieg.iso \
-		$(BUILD)/pieg-uefi.iso \
-		$(BUILD)/pieg-legacy.iso
+	rm -f $(BUILD)/*.o
+	rm -f $(BUILD)/programs/*.elf
+	rm -f $(BUILD)/pieg.elf
+	rm -f $(BUILD)/pieg.iso
+	rm -f $(BUILD)/pieg-fs.img
+	rm -f $(BUILD)/pieg-disk.img
+	rm -f $(BUILD)/pieg-partition.img
+	rm -f $(BUILD)/pieg-uefi.iso
+	rm -f $(BUILD)/pieg-legacy.iso

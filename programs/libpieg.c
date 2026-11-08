@@ -170,6 +170,33 @@ void p_size(uint64_t bytes)
     }
 }
 
+/* Like p_size() but keeps two decimals ("4.27 MiB") instead of truncating,
+ * so small totals are not rounded away. Integer math only, rounds down. */
+void p_size_precise(uint64_t bytes)
+{
+    unsigned int u = 0;
+    uint64_t whole = bytes;
+    uint64_t rest = 0;                  /* remainder in 1/1024ths */
+
+    while (u < 3 && whole >= 1024ull) {
+        rest = whole % 1024ull;
+        whole /= 1024ull;
+        u++;
+    }
+
+    p_u64(whole);
+
+    if (u > 0) {
+        uint64_t hundredths = rest * 100ull / 1024ull;
+
+        pieg->putchar('.');
+        pieg->putchar((char)('0' + hundredths / 10));
+        pieg->putchar((char)('0' + hundredths % 10));
+    }
+
+    pieg->write(u == 0 ? " bytes" : u == 1 ? " KiB" : u == 2 ? " MiB" : " GiB");
+}
+
 char p_getc(void)
 {
     for (;;) {

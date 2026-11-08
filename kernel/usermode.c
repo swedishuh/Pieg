@@ -156,7 +156,10 @@ void arch_init(void)
     X(disk_info, 2) X(disk_install, 0) \
     X(sound_tone, 0) X(sound_stop, 0) \
     X(disk_part_info, 4) \
-    X(kbd_load, 1) X(kbd_info, 3)
+    X(kbd_load, 1) X(kbd_info, 3) \
+    X(gfx_begin, 3) X(gfx_end, 0) X(gfx_rect, 0) X(gfx_text, 4) \
+    X(gfx_present, 0) X(gfx_ms, 0) \
+    X(mouse_state, 7)
 
 enum {
     SYS_exit = 0,

@@ -684,12 +684,248 @@ void framebuffer_copy_rows(uint32_t dst_y, uint32_t src_y, uint32_t rows)
     mark_dirty(0, dst_y, fb_width, rows);
 }
 
+/* ---------------------------------------------------------------------------
+ * Mouse cursor
+ *
+ * A ball with an X on it, lit from the top left, with a soft drop shadow. The
+ * sprite is rendered once (with 4x4 supersampling for smooth edges) into an
+ * ARGB table; flush() blends it over the RAM copy of the screen and writes
+ * the result straight to video memory.
+ * ------------------------------------------------------------------------ */
+#define CUR_MAX 44
+
+static uint32_t cur_sprite[CUR_MAX * CUR_MAX];  /* 0xAARRGGBB, straight alpha */
+static uint32_t cur_side;                       /* sprite is cur_side square  */
+static uint32_t cur_ball;                       /* ball diameter in pixels    */
+static bool cur_built;
+
+static int cur_x, cur_y;                        /* wanted: ball center        */
+static bool cur_vis;
+static int drawn_x, drawn_y;                    /* what is on screen          */
+static bool drawn_vis;
+
+static uint32_t isqrt32(uint32_t v)
+{
+    uint32_t r = 0, bit = 1u << 30;
+
+    while (bit > v)
+        bit >>= 2;
+
+    while (bit) {
+        if (v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+
+    return r;
+}
+
+static int imin(int a, int b) { return a < b ? a : b; }
+static int imax(int a, int b) { return a > b ? a : b; }
+static int iabs(int a) { return a < 0 ? -a : a; }
+
+static uint32_t lerp8(uint32_t a, uint32_t b, uint32_t t)   /* t 0..255 */
+{
+    return (a * (255u - t) + b * t) / 255u;
+}
+
+static void cursor_build(void)
+{
+    uint32_t d = fb_height / 48u;
+
+    d = d < 14u ? 14u : d > 30u ? 30u : d;
+    d &= ~1u;
+
+    uint32_t off = d / 5u + 1u;                 /* shadow offset in pixels    */
+
+    cur_ball = d;
+    cur_side = d + off + 3u;
+
+    /* All geometry is in eighths of a pixel, centered on the ball. */
+    int R = (int)(4u * d);                      /* ball radius                */
+    int sx_c = R + (int)(off * 8u);             /* shadow center              */
+    int sy_c = R + (int)(off * 8u) + 4;
+    int Rs = R * 19 / 20;                       /* shadow radius              */
+    int soft = 14;                              /* shadow edge softness       */
+    int k = (int)(2u * d) / 3 + 2;              /* X stroke, |u-v| <= k       */
+    int xr = R * 11 / 20;                       /* X arm length               */
+
+    for (uint32_t py = 0; py < cur_side; py++) {
+        for (uint32_t px = 0; px < cur_side; px++) {
+            int nb = 0, nx = 0;
+
+            /* Coverage of the ball and of the X, 16 samples per pixel. */
+            for (int j = 0; j < 4; j++) {
+                for (int i = 0; i < 4; i++) {
+                    int u = (int)px * 8 + i * 2 + 1 - R;
+                    int v = (int)py * 8 + j * 2 + 1 - R;
+
+                    if (u * u + v * v > R * R)
+                        continue;
+
+                    nb++;
+
+                    if ((iabs(u - v) <= k || iabs(u + v) <= k) &&
+                        iabs(u) <= xr && iabs(v) <= xr)
+                        nx++;
+                }
+            }
+
+            /* Ball color at the pixel center: diffuse + a small highlight. */
+            int u = (int)px * 8 + 4 - R;
+            int v = (int)py * 8 + 4 - R;
+            int r2 = u * u + v * v;
+            int nz = r2 >= R * R ? 0 : (int)isqrt32((uint32_t)(R * R - r2));
+            int dot = (u * -45 + v * -55 + nz * 70) * 256 / (R * 100);
+            uint32_t t = (uint32_t)imin(255, 60 + imax(dot, 0) * 195 / 256);
+            uint32_t spec = (uint32_t)imax(0, dot - 210) * 2u;
+
+            uint32_t br = lerp8(6, 90, t) + spec;
+            uint32_t bg = lerp8(92, 255, t) + spec;
+            uint32_t bb = lerp8(30, 140, t) + spec;
+
+            br = br > 255u ? 255u : br;
+            bg = bg > 255u ? 255u : bg;
+            bb = bb > 255u ? 255u : bb;
+
+            uint32_t ba = 0;
+
+            if (nb) {
+                /* The X is a deep green cut into the ball. */
+                br = (br * (uint32_t)(nb - nx) + 3u * (uint32_t)nx) / (uint32_t)nb;
+                bg = (bg * (uint32_t)(nb - nx) + 38u * (uint32_t)nx) / (uint32_t)nb;
+                bb = (bb * (uint32_t)(nb - nx) + 12u * (uint32_t)nx) / (uint32_t)nb;
+                ba = (uint32_t)nb * 255u / 16u;
+            }
+
+            /* Shadow: black, soft edge, offset down and to the right. */
+            int su = (int)px * 8 + 4 - sx_c;
+            int sv = (int)py * 8 + 4 - sy_c;
+            int sd = (int)isqrt32((uint32_t)(su * su + sv * sv));
+            int s = (Rs + soft - sd) * 255 / (2 * soft);
+
+            s = imax(0, imin(255, s));
+
+            uint32_t sa = (uint32_t)s * 120u / 255u;
+            uint32_t ra = ba + sa * (255u - ba) / 255u;
+
+            if (ra == 0) {
+                cur_sprite[py * CUR_MAX + px] = 0;
+                continue;
+            }
+
+            /* Ball over a black shadow: the color only comes from the ball. */
+            br = br * ba / ra;
+            bg = bg * ba / ra;
+            bb = bb * ba / ra;
+
+            cur_sprite[py * CUR_MAX + px] =
+                (ra << 24) | (br << 16) | (bg << 8) | bb;
+        }
+    }
+
+    cur_built = true;
+}
+
+static uint32_t read_pixel(uint32_t x, uint32_t y)
+{
+    const uint8_t *p = draw + (uint64_t)y * fb_pitch +
+                       (uint64_t)x * (fb_bpp / 8u);
+    uint32_t v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+
+    if (fb_bpp == 32)
+        v |= (uint32_t)p[3] << 24;
+
+    return v;
+}
+
+static void write_pixel(uint32_t x, uint32_t y, uint32_t v)
+{
+    volatile uint8_t *p = fb + (uint64_t)y * fb_pitch +
+                          (uint64_t)x * (fb_bpp / 8u);
+
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+
+    if (fb_bpp == 32)
+        p[3] = (uint8_t)(v >> 24);
+}
+
+/*
+ * Rewrites the pixels of [x0,x1) x [y0,y1) on screen from the RAM copy, with
+ * the cursor blended in at its wanted position when it is visible. Each
+ * pixel is written once, so moving the cursor does not flicker.
+ */
+static void paint_rect(int x0, int y0, int x1, int y1)
+{
+    int sx0 = cur_x - (int)(cur_ball / 2u);
+    int sy0 = cur_y - (int)(cur_ball / 2u);
+
+    x0 = imax(x0, 0);
+    y0 = imax(y0, 0);
+    x1 = imin(x1, (int)fb_width);
+    y1 = imin(y1, (int)fb_height);
+
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            uint32_t pixel = read_pixel((uint32_t)x, (uint32_t)y);
+            int cx = x - sx0, cy = y - sy0;
+
+            if (cur_vis && cx >= 0 && cy >= 0 &&
+                cx < (int)cur_side && cy < (int)cur_side) {
+                uint32_t c = cur_sprite[(uint32_t)cy * CUR_MAX + (uint32_t)cx];
+                uint32_t a = c >> 24;
+
+                if (a) {
+                    uint32_t sr = (c >> 16) & 255u, sg = (c >> 8) & 255u,
+                             sb = c & 255u;
+                    uint32_t dr = (pixel >> red_position) & 255u;
+                    uint32_t dg = (pixel >> green_position) & 255u;
+                    uint32_t db = (pixel >> blue_position) & 255u;
+
+                    dr = (sr * a + dr * (255u - a) + 127u) / 255u;
+                    dg = (sg * a + dg * (255u - a) + 127u) / 255u;
+                    db = (sb * a + db * (255u - a) + 127u) / 255u;
+
+                    pixel &= ~((255u << red_position) | (255u << green_position) |
+                               (255u << blue_position));
+                    pixel |= (dr << red_position) | (dg << green_position) |
+                             (db << blue_position);
+                }
+            }
+
+            write_pixel((uint32_t)x, (uint32_t)y, pixel);
+        }
+    }
+}
+
+void framebuffer_cursor_set(int x, int y, bool visible)
+{
+    if (!fb_ready || !buffered)
+        return;
+
+    if (!cur_built)
+        cursor_build();
+
+    cur_x = x;
+    cur_y = y;
+    cur_vis = visible;
+}
+
 /* Pushes everything drawn since the last flush to video memory. */
 void framebuffer_flush(void)
 {
-    if (!buffered || !dirty)
+    if (!buffered)
         return;
 
+    bool cur_changed = (cur_vis != drawn_vis) ||
+                       (cur_vis && (cur_x != drawn_x || cur_y != drawn_y));
+    bool had_dirty = dirty;
     uint32_t bpp = fb_bpp / 8u;
     uint32_t y0 = dirty_y0;
     uint32_t y1 = dirty_y1 > fb_height ? fb_height : dirty_y1;
@@ -697,30 +933,65 @@ void framebuffer_flush(void)
     uint32_t bx0 = dirty_bx0 & ~7u;             /* keep stores qword aligned */
     uint32_t bx1 = (dirty_bx1 + 7u) & ~7u;
 
-    dirty = false;
-
-    if (y0 >= y1)
+    if (!had_dirty && !cur_changed)
         return;
 
-    if (bx1 > fb_pitch)
-        bx1 = fb_pitch;
+    dirty = false;
 
-    if (bx0 == 0 && dirty_bx1 >= row_bytes) {
-        /* Full-width: one long sequential burst. */
-        uint64_t offset = (uint64_t)y0 * fb_pitch;
-        uint64_t length = (uint64_t)(y1 - y0) * fb_pitch;
+    if (had_dirty && y0 < y1) {
+        if (bx1 > fb_pitch)
+            bx1 = fb_pitch;
 
-        if (offset + length > fb_bytes)
-            length = fb_bytes - offset;
+        if (bx0 == 0 && dirty_bx1 >= row_bytes) {
+            /* Full-width: one long sequential burst. */
+            uint64_t offset = (uint64_t)y0 * fb_pitch;
+            uint64_t length = (uint64_t)(y1 - y0) * fb_pitch;
 
-        copy_bytes((void *)(fb + offset), draw + offset, length);
-    } else {
-        for (uint32_t row = y0; row < y1; row++) {
-            uint64_t offset = (uint64_t)row * fb_pitch + bx0;
+            if (offset + length > fb_bytes)
+                length = fb_bytes - offset;
 
-            copy_bytes((void *)(fb + offset), draw + offset, bx1 - bx0);
+            copy_bytes((void *)(fb + offset), draw + offset, length);
+        } else {
+            for (uint32_t row = y0; row < y1; row++) {
+                uint64_t offset = (uint64_t)row * fb_pitch + bx0;
+
+                copy_bytes((void *)(fb + offset), draw + offset, bx1 - bx0);
+            }
         }
     }
+
+    if (cur_built && (cur_vis || drawn_vis)) {
+        int side = (int)cur_side;
+        int half = (int)(cur_ball / 2u);
+
+        /* Where the cursor was: put the screen back (or leave it, if it moved
+         * onto itself). Where it is now: draw it. */
+        if (drawn_vis && cur_changed)
+            paint_rect(drawn_x - half, drawn_y - half,
+                       drawn_x - half + side, drawn_y - half + side);
+
+        if (cur_vis) {
+            int nx0 = cur_x - half, ny0 = cur_y - half;
+            bool hit = cur_changed;
+
+            if (!hit && had_dirty) {
+                /* The text or program redrew under the cursor: put it back. */
+                /* The copy above is rounded out to 8 bytes: allow for it. */
+                int dx0 = (int)(dirty_bx0 / bpp) - 2;
+                int dx1 = (int)((dirty_bx1 + bpp - 1u) / bpp) + 2;
+
+                hit = nx0 < dx1 && nx0 + side > dx0 &&
+                      ny0 < (int)y1 && ny0 + side > (int)y0;
+            }
+
+            if (hit)
+                paint_rect(nx0, ny0, nx0 + side, ny0 + side);
+        }
+    }
+
+    drawn_x = cur_x;
+    drawn_y = cur_y;
+    drawn_vis = cur_vis;
 
     __asm__ volatile ("sfence" : : : "memory");
 }

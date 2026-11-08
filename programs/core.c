@@ -561,6 +561,7 @@ static int cmd_df(void)
 static int cmd_ram(void)
 {
     pieg_raminfo_t ram;
+    uint64_t ramdisk = 0;
 
     if (!pieg->ram_info(&ram)) {
         p_putln("RAM information unavailable.");
@@ -568,16 +569,35 @@ static int cmd_ram(void)
     }
 
     p_puts("Usable RAM: ");
-    p_size(ram.total);
+    p_size_precise(ram.total);
     p_putc('\n');
 
     if (ram.usage_available) {
         p_puts("Used RAM:   ");
-        p_size(ram.used);
+        p_size_precise(ram.used);
         p_putc('\n');
 
+        /* A boot-module RAM disk (rd0, rd1) is RAM the kernel holds whole,
+         * empty space included, so it is part of "used". Say how much. */
+        for (unsigned int i = 0; i < pieg->blockdev_count(); i++) {
+            pieg_bdinfo_t dev;
+
+            if (pieg->blockdev_info(i, &dev) &&
+                dev.name[0] == 'r' && dev.name[1] == 'd')
+                ramdisk += dev.bytes;
+        }
+
+        if (ramdisk != 0 && ramdisk <= ram.used) {
+            p_puts("  of which RAM disk: ");
+            p_size_precise(ramdisk);
+            p_putc('\n');
+            p_puts("  system (kernel, buffers, boot info): ");
+            p_size_precise(ram.used - ramdisk);
+            p_putc('\n');
+        }
+
         p_puts("Free RAM:   ");
-        p_size(ram.free);
+        p_size_precise(ram.free);
         p_putc('\n');
     } else {
         p_putln("Used RAM:   unavailable");
@@ -601,7 +621,7 @@ static int cmd_ver(void)
 {
     p_puts("PIEG Shell ");
     p_puts(pieg->shell_version);
-    p_putln(" \"Tea Lake\"");
+    p_putln(" \"Mountain\"");
     p_putln("PIEG OS x86-64");
     return 0;
 }
@@ -642,25 +662,25 @@ static int cmd_sysinfo(void)
 }
 
 static const char *const fetch_art[] = {
-    "      VJJO                       JJV",
+    "      JJ                         JJ",
     "      JJJJ                      JJJJJ",
     "     JGAACJ     JJJJJJJJJ       JAAGJ",
     "     JGAACJ     JJJJJJJJJ       JAAGJ",
     "      GAACJJJJJJJJJJJJJJJJJJJJJJJAAGJ",
     "    JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
     "    JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
-    " JJJJJJJJO  AAJ JJJJJJJJS AAA PJJJJJJJJJW",
+    " JJJJJJJJO  A J JJJJJJJJS A A PJJJJJJJJJW",
     " JJJJJJJJO  AAJ JJJJJJJJS AAA PJJJJJJJJJW",
     "JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
     "JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
-    "JJJJJJJJJJJJJJJJJJJJJEAAAJJJJJJJJJJJJJJJJJ",
-    "JJJJJJJJJJJJJJJJAAAAJEAAAJJJJJJJJJJJJJJJJJ",
-    " XJJJJJJJJJJJJJJAAAAJEAAAJJJJJJJJJJJJJJJ",
+    "JJJJJJJJJJJJJJJJ    JE    JJJJJJJJJJJJJJJJ",
+    "JJJJJJJJJJJJJJJJ    JE    JJJJJJJJJJJJJJJJ",
+    " XJJJJJJJJJJJJJJ    JE    JJJJJJJJJJJJJJ",
     " XJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
     "     JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
     "     JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
     "             JJJJJJJJJJJJJJJ",
-    "             JJJJJJJJJJJJJJJ",
+    "             ",
 };
 
 static int cmd_fetch(void)
@@ -818,7 +838,7 @@ int main(int argc, char **argv)
     if (IS("ver") || IS("version"))
         return cmd_ver();
     if (IS("uname")) {
-        p_putln("PIEG pieg 0.8.1 Tea Lake x86_64 Multiboot2");
+        p_putln("PIEG pieg 0.9 Mountain x86_64 Multiboot2");
         return 0;
     }
     if (IS("hostname")) {
